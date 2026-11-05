@@ -1092,9 +1092,26 @@ impl<'a, B: Brush> BreakLines<'a, B> {
                         return self.max_height_break_data(height_contribution);
                     }
 
+                    // Whether a box that does not fit may start the next line. The soft wrap
+                    // opportunity before an atomic inline is controlled by the nearest common
+                    // ancestor of it and the content before it (CSS Text 3 § 5.1), which wraps
+                    // when the content before does, or when the box's own parent does (Chrome:
+                    // `<span style="white-space:pre-wrap">r<span style="white-space:pre">e f
+                    // g</span><img></span>` breaks before the image).
+                    let parent_style_index = usize::from(
+                        self.layout.data.inline_boxes[item.index].parent_style_index,
+                    );
+                    let box_wraps = self
+                        .layout
+                        .data
+                        .styles
+                        .get(parent_style_index)
+                        .is_some_and(|style| style.text_wrap_mode == TextWrapMode::Wrap);
+
                     // If the box fits on the current line (or we are at the start of the current line)
                     // then simply move on to the next item
-                    if next_x <= max_advance || self.state.line.text_wrap_mode != TextWrapMode::Wrap
+                    if next_x <= max_advance
+                        || (self.state.line.text_wrap_mode != TextWrapMode::Wrap && !box_wraps)
                     {
                         self.append_layout_inline_box(item.index, next_x);
 
