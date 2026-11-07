@@ -59,7 +59,9 @@ pub use script::ScriptExt;
 
 pub use attributes::Attributes;
 pub use charmap::{Charmap, CharmapIndex};
-pub use collection::{Collection, CollectionOptions, Query, QueryFamily, QueryFont, QueryStatus};
+pub use collection::{
+    Collection, CollectionOptions, Query, QueryFamily, QueryFont, QueryStatus, SystemFamilyMatch,
+};
 pub use fallback::FallbackKey;
 pub use family::{FamilyId, FamilyInfo};
 pub use font::{AxisInfo, FontInfo, FontInfoOverride, Synthesis};

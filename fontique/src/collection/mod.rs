@@ -140,6 +140,16 @@ impl Collection {
         self.inner.family_by_name(name)
     }
 
+    /// The system font backend's own answer for the family `name`, or `None`
+    /// where the backend has no such query (only fontconfig has one) or no
+    /// system fonts were loaded. See [`SystemFamilyMatch`].
+    ///
+    /// This asks the backend every time; it is not cached. A registered
+    /// family is not consulted: the answer is the system's alone.
+    pub fn system_family_match(&mut self, name: &str) -> Option<SystemFamilyMatch> {
+        self.inner.system_family_match(name)
+    }
+
     /// Returns an iterator over the family identifiers for the given
     /// generic family.
     pub fn generic_families(
@@ -240,6 +250,27 @@ impl Default for Collection {
     fn default() -> Self {
         Self::new(CollectionOptions::default())
     }
+}
+
+/// What the system font backend answers for a family name, as
+/// [`Collection::system_family_match`] returns it.
+///
+/// On fontconfig this is the pair Chrome's Linux font manager judges a
+/// match by (Skia's `SkFontConfigInterfaceDirect`): the query's first family
+/// after the configuration's substitutions, and the family names of the font
+/// fontconfig matches it to. fontconfig always matches *some* font, so the
+/// match alone says nothing about whether it stands for `name`; that is the
+/// caller's to decide.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct SystemFamilyMatch {
+    /// The query's first family after substitution (`FcConfigSubstitute`):
+    /// `name` itself unless the configuration puts another family ahead of
+    /// it.
+    pub configured: String,
+    /// The family names of the best-matching font (`FcFontMatch`), its
+    /// first name first.
+    pub matched: Vec<String>,
 }
 
 /// Collection of fonts.
@@ -365,6 +396,15 @@ impl Inner {
         } else {
             None
         }
+    }
+
+    pub fn system_family_match(&mut self, name: &str) -> Option<SystemFamilyMatch> {
+        #[cfg(all(feature = "system", any(target_os = "linux", target_os = "freebsd")))]
+        if let Some(system) = &self.system {
+            return system.fonts.lock().unwrap().family_match(name);
+        }
+        let _ = name;
+        None
     }
 
     /// Returns an iterator over the family identifiers for the given
@@ -793,6 +833,7 @@ impl CommonData {
             return;
         };
 
+        font.set_registered();
         if let Some(info_override) = info_override.as_ref() {
             font.apply_override(info_override);
         }
@@ -965,5 +1006,45 @@ fn load_fonts_from_paths_registers_each_face_once() {
                 collection.family_name(id),
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ROBOTO: &[u8] =
+        include_bytes!("../../../parley_dev/assets/fonts/roboto_fonts/Roboto-Regular.ttf");
+
+    /// A face given to the collection is registered (the app's own, emboldened
+    /// by the `@font-face` rule, rinch #2343); a face built from a source
+    /// directly, as the system backends build theirs, is not.
+    #[test]
+    fn registered_fonts_are_marked_registered() {
+        let mut collection = Collection::new(CollectionOptions {
+            system_fonts: false,
+            ..Default::default()
+        });
+        let families = collection.register_fonts(Blob::new(Arc::new(ROBOTO.to_vec())), None);
+        let (id, fonts) = families.first().unwrap();
+        assert!(fonts.iter().all(FontInfo::is_registered));
+        let family = collection.family(*id).unwrap();
+        assert!(family.fonts().iter().all(FontInfo::is_registered));
+
+        let source = SourceInfo::new(
+            SourceId::new(),
+            SourceKind::Memory(Blob::new(Arc::new(ROBOTO.to_vec()))),
+        );
+        assert!(!FontInfo::from_source(source, 0).unwrap().is_registered());
+    }
+
+    /// Without system fonts there is no backend to ask.
+    #[test]
+    fn no_system_family_match_without_system_fonts() {
+        let mut collection = Collection::new(CollectionOptions {
+            system_fonts: false,
+            ..Default::default()
+        });
+        assert_eq!(collection.system_family_match("Arial"), None);
     }
 }

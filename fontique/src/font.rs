@@ -25,6 +25,7 @@ pub struct FontInfo {
     axes: AxisVec,
     attr_axes: u8,
     charmap_index: CharmapIndex,
+    registered: bool,
 }
 
 impl FontInfo {
@@ -86,6 +87,37 @@ impl FontInfo {
         self.weight
     }
 
+    /// Returns true if the font was registered with the collection
+    /// ([`Collection::register_fonts`](crate::Collection::register_fonts) or
+    /// [`Collection::load_fonts_from_paths`](crate::Collection::load_fonts_from_paths)),
+    /// false if it came from the system font backend. A registered font is
+    /// the app's own, the counterpart of a CSS `@font-face` rule, and
+    /// [`synthesis`](Self::synthesis) emboldens it by that rule.
+    pub fn is_registered(&self) -> bool {
+        self.registered
+    }
+
+    /// Whether a static (no `wght` axis) face is emboldened for `weight`.
+    ///
+    /// Blink has two rules, and this follows both (measured in Chrome 156):
+    ///
+    /// - A **registered** face, like an `@font-face` face, is emboldened when
+    ///   the request is bold (600 or more) and the face is not (under 600):
+    ///   `CSSSegmentedFontFace::GetFontData` (`kBoldThreshold`). A 400 face
+    ///   is emboldened at 600 but not at 550, and a 600 face never.
+    /// - A **system** face is emboldened when the request is more than 200
+    ///   over the face's weight: `FontCache::CreateFontPlatformData`
+    ///   (`font_cache_skia.cc`). A 400 face is emboldened at 601 but not at
+    ///   600, a 200 face at 401, and a 600 face at 801.
+    fn embolden_for(&self, weight: FontWeight) -> bool {
+        const BOLD_THRESHOLD: f32 = 600.0;
+        if self.registered {
+            weight.value() >= BOLD_THRESHOLD && self.weight.value() < BOLD_THRESHOLD
+        } else {
+            weight.value() > self.weight.value() + 200.0
+        }
+    }
+
     /// Returns synthesis suggestions for this font with the given attributes.
     pub fn synthesis(&self, width: FontWidth, style: FontStyle, weight: FontWeight) -> Synthesis {
         let mut synth = Synthesis::default();
@@ -108,7 +140,7 @@ impl FontInfo {
                 synth.vars[len] = (Tag::new(b"wght"), weight.value());
                 len += 1;
             }
-        } else if weight.value() > self.weight.value() + 200.0 {
+        } else if self.embolden_for(weight) {
             synth.embolden = true;
         }
         if self.style != style {
@@ -255,6 +287,7 @@ impl FontInfo {
             axes,
             attr_axes,
             charmap_index,
+            registered: false,
         })
     }
 
@@ -274,6 +307,10 @@ impl FontInfo {
         if self.weight == FontWeight::default() {
             self.weight = weight;
         }
+    }
+
+    pub(crate) fn set_registered(&mut self) {
+        self.registered = true;
     }
 
     pub(crate) fn apply_override(&mut self, info_override: &FontInfoOverride<'_>) {
@@ -558,5 +595,77 @@ mod tests {
         );
         assert!(synthesis.embolden());
         assert!(synthesis.variation_settings().is_empty());
+    }
+
+    /// Roboto Regular as a static face of `weight`, registered or not.
+    fn static_face(weight: f32, registered: bool) -> FontInfo {
+        let mut font = font_info(ROBOTO);
+        font.apply_override(&FontInfoOverride {
+            weight: Some(FontWeight::new(weight)),
+            ..Default::default()
+        });
+        if registered {
+            font.set_registered();
+        }
+        font
+    }
+
+    fn emboldened(font: &FontInfo, weight: f32) -> bool {
+        font.synthesis(font.width(), font.style(), FontWeight::new(weight))
+            .embolden()
+    }
+
+    /// A system face: Blink's `FontCache::CreateFontPlatformData` rule,
+    /// emboldened past 200 over the face. Measured in Chrome 156 on
+    /// fontconfig faces (rinch #2343): a regular (400) face from 601, an
+    /// extra-light (200) face from 401 and a semibold (600) face from 801.
+    #[test]
+    fn a_system_face_is_emboldened_past_200_over_its_weight() {
+        for (face, last_regular, first_bold) in
+            [(400., 600., 601.), (200., 400., 401.), (600., 800., 801.)]
+        {
+            let font = static_face(face, false);
+            assert!(!font.is_registered());
+            assert!(
+                !emboldened(&font, last_regular),
+                "{face} face at {last_regular}"
+            );
+            assert!(emboldened(&font, first_bold), "{face} face at {first_bold}");
+        }
+    }
+
+    /// A registered face, like an `@font-face` face: Blink's
+    /// `CSSSegmentedFontFace` rule, emboldened when the request is 600 or
+    /// more and the face is under 600. Measured in Chrome 156 (rinch #2343):
+    /// a 300, 400 or 500 face is emboldened at 600 and not at 599 or 550,
+    /// and a 600 face is not emboldened even at 900.
+    #[test]
+    fn a_registered_face_is_emboldened_from_600_when_it_is_under_600() {
+        for face in [300., 400., 500., 599.] {
+            let font = static_face(face, true);
+            assert!(font.is_registered());
+            for weight in [face, 550., 599.] {
+                assert!(!emboldened(&font, weight), "{face} face at {weight}");
+            }
+            for weight in [600., 601., 700., 900.] {
+                assert!(emboldened(&font, weight), "{face} face at {weight}");
+            }
+        }
+        for face in [600., 700.] {
+            let font = static_face(face, true);
+            for weight in [600., 801., 900., 1000.] {
+                assert!(!emboldened(&font, weight), "{face} face at {weight}");
+            }
+        }
+    }
+
+    /// A registered variable face takes the weight from its axis, as before:
+    /// no embolden, whatever the rule for static faces.
+    #[test]
+    fn a_registered_variable_face_is_not_emboldened() {
+        let mut font = font_info(ROBOTO_FLEX);
+        font.set_registered();
+        let synthesis = font.synthesis(font.width(), font.style(), FontWeight::new(700.0));
+        assert!(!synthesis.embolden());
     }
 }

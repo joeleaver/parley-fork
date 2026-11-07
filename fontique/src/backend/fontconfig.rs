@@ -20,17 +20,20 @@ use fontconfig_sys::{
     FcChar8, FcCharSet, FcConfig, FcFontSet, FcLangSet, FcMatchKind, FcMatchPattern, FcPattern,
     FcResult, FcResultMatch, FcResultNoId, FcResultNoMatch, FcResultOutOfMemory,
     FcResultTypeMismatch, FcSetSystem,
-    constants::{FC_CHARSET, FC_FAMILY, FC_FILE, FC_INDEX, FC_LANG, FC_SLANT, FC_WEIGHT, FC_WIDTH},
+    constants::{
+        FC_CHARSET, FC_FAMILY, FC_FILE, FC_INDEX, FC_LANG, FC_SCALABLE, FC_SLANT, FC_WEIGHT,
+        FC_WIDTH,
+    },
     ffi_dispatch,
 };
 #[cfg(not(feature = "fontconfig-dlopen"))]
 use fontconfig_sys::{
     FcCharSetAddChar, FcCharSetCopy, FcCharSetCreate, FcCharSetDestroy, FcConfigBuildFonts,
-    FcConfigDestroy, FcConfigGetFonts, FcConfigReference, FcConfigSubstitute, FcFontMatch,
-    FcFontRenderPrepare, FcFontSetDestroy, FcFontSort, FcInitLoadConfig, FcLangSetAdd,
-    FcLangSetCopy, FcLangSetCreate, FcLangSetDestroy, FcNameUnparse, FcPatternAddCharSet,
-    FcPatternAddLangSet, FcPatternAddString, FcPatternCreate, FcPatternDestroy,
-    FcPatternGetInteger, FcPatternGetString, FcPatternReference, FcStrFree,
+    FcConfigDestroy, FcConfigGetFonts, FcConfigReference, FcConfigSubstitute, FcDefaultSubstitute,
+    FcFontMatch, FcFontRenderPrepare, FcFontSetDestroy, FcFontSort, FcInitLoadConfig, FcLangSetAdd,
+    FcLangSetCopy, FcLangSetCreate, FcLangSetDestroy, FcNameUnparse, FcPatternAddBool,
+    FcPatternAddCharSet, FcPatternAddLangSet, FcPatternAddString, FcPatternCreate,
+    FcPatternDestroy, FcPatternGetInteger, FcPatternGetString, FcPatternReference, FcStrFree,
 };
 
 use hashbrown::{HashMap, HashSet, hash_map::Entry};
@@ -121,6 +124,30 @@ impl Pattern {
                 object.as_ptr(),
                 s.as_ptr() as *const _
             ) != 0
+        }
+    }
+
+    fn add_bool(&mut self, object: &CStr, b: bool) -> bool {
+        unsafe {
+            ffi_dispatch!(
+                feature = "fontconfig-dlopen",
+                LIB,
+                FcPatternAddBool,
+                self.inner.as_ptr(),
+                object.as_ptr(),
+                b as i32
+            ) != 0
+        }
+    }
+
+    fn default_substitute(&mut self) {
+        unsafe {
+            ffi_dispatch!(
+                feature = "fontconfig-dlopen",
+                LIB,
+                FcDefaultSubstitute,
+                self.inner.as_ptr()
+            );
         }
     }
 
@@ -771,6 +798,33 @@ impl SystemFonts {
 }
 
 impl SystemFonts {
+    /// fontconfig's answer for the family `name`, asked as Chrome's Linux
+    /// font manager asks it (Skia's `SkFontConfigInterfaceDirect::
+    /// matchFamilyName`): a scalable, SFNT-wrapped pattern for `name`, with
+    /// the configuration's and the default substitutions applied. Its first
+    /// family after substitution, and the family names of `FcFontMatch`'s
+    /// best font.
+    pub(crate) fn family_match(&mut self, name: &str) -> Option<crate::SystemFamilyMatch> {
+        let config = self.config.as_ref()?;
+        let mut pattern = Pattern::new()?;
+        pattern.add_string(FC_FAMILY, CString::new(name).ok()?.as_c_str());
+        pattern.add_bool(FC_SCALABLE, true);
+        // Skia adds this too, so a fontconfig that knows it prefers SFNT
+        // fonts; one that does not ignores an unknown object.
+        pattern.add_string(c"fontwrapper", c"SFNT");
+        config.substitute(&mut pattern, FcMatchPattern);
+        pattern.default_substitute();
+        let configured = pattern.get_string(FC_FAMILY, 0).ok()?.into_owned();
+        let font = config.font_match(&pattern).ok()?;
+        let matched = (0..)
+            .map_while(|i| font.get_string(FC_FAMILY, i).ok().map(Cow::into_owned))
+            .collect();
+        Some(crate::SystemFamilyMatch {
+            configured,
+            matched,
+        })
+    }
+
     fn family_uncached(&mut self, id: FamilyId) -> Option<FamilyInfo> {
         let config = self.config.as_ref()?;
         let name = self.name_map.get_by_id(id).cloned()?;
