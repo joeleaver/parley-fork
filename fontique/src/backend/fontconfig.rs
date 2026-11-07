@@ -654,20 +654,22 @@ impl SystemFonts {
         };
 
         // Populate the family name map.
+        //
+        // Every family name a font lists is a family of its own, the way
+        // fontconfig matches a family: a font is in family `X` if `X` is any
+        // of its `FC_FAMILY` names (`family_uncached` collects them). A second
+        // name used to be an alias of the font's first name, which sent a
+        // name to the wrong family: `/usr/local/share/fonts/a/ariblk.ttf`
+        // lists "Arial, Arial Black", so `'Arial Black'` resolved to Arial
+        // (Regular), or to nothing when another font's first name was
+        // "Arial Black" (rinch #2294). A second name that is an RBIZ name
+        // ("Roboto Light") is now the faces that list it, as
+        // fontconfig matches it.
         let mut name_map = FamilyNameMap::default();
         for pattern in font_set.iter() {
             let mut i = 0;
-
-            let mut first_name_id = None;
-            // For fonts with more than one family name, the second one is
-            // *often* (but not always) an RBIZ name.
             while let Ok(name) = pattern.get_string(FC_FAMILY, i) {
-                if i == 0 {
-                    // First name
-                    first_name_id = Some(name_map.get_or_insert(&name).id());
-                } else if let Some(first_name_id) = first_name_id {
-                    name_map.add_alias(first_name_id, &name);
-                }
+                name_map.get_or_insert(&name);
                 i += 1;
             }
         }
@@ -784,14 +786,14 @@ impl SystemFonts {
             let Some(font) = config.font_render_prepare(&pattern, &font) else {
                 continue;
             };
-            let Ok(family_name) = font.get_string(FC_FAMILY, 0) else {
-                continue;
-            };
             // We've performed font substitution and then sorted everything by
             // "closeness", so the good fonts should be at the top. Once we see
             // a fallback font (one that's not part of the family we explicitly
-            // asked for), we can stop.
-            if family_name != name.name() {
+            // asked for), we can stop. A font is part of the family when any
+            // of its family names is the one asked for, not only its first:
+            // fontconfig sorts by all of them (rinch #2294).
+            let mut family_names = (0..).map_while(|i| font.get_string(FC_FAMILY, i).ok());
+            if !family_names.any(|family_name| same_family_name(&family_name, name.name())) {
                 break;
             }
 
@@ -842,3 +844,11 @@ const GENERIC_FAMILY_NAMES: &[(GenericFamily, &CStr)] = &[
     (GenericFamily::Emoji, c"emoji"),
     (GenericFamily::Math, c"math"),
 ];
+
+/// Whether two family names are the same name, compared as the family name
+/// map compares them (case-insensitively).
+fn same_family_name(a: &str, b: &str) -> bool {
+    a.chars()
+        .flat_map(char::to_lowercase)
+        .eq(b.chars().flat_map(char::to_lowercase))
+}
