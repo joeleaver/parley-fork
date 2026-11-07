@@ -292,7 +292,7 @@ fn quantized_metrics_are_whole_pixels() {
 }
 
 #[test]
-fn line_with_only_empty_inline_boxes_is_invisible() {
+fn line_with_only_out_of_flow_inline_boxes_is_invisible() {
     let mut fcx = create_font_context();
     let mut lcx: LayoutContext<ColorBrush> = LayoutContext::new();
     let root = root_style();
@@ -311,11 +311,65 @@ fn line_with_only_empty_inline_boxes_is_invisible() {
         layout.break_all_lines(None);
         layout.lines().next().unwrap().metrics().line_height
     };
-    // Empty and out-of-flow boxes alone do not make the strut apply.
-    assert_eq!(line_height(0., InlineBoxKind::InFlow), 0.);
+    // Out-of-flow boxes alone do not make the strut apply.
     assert_eq!(line_height(10., InlineBoxKind::OutOfFlow), 0.);
-    // A non-empty in-flow box does.
+    assert_eq!(line_height(0., InlineBoxKind::OutOfFlow), 0.);
+    // An in-flow box does, whatever its size (rinch-patch; CSS 2.2 § 9.4.2 and Chrome count an
+    // image or inline-block as content with no size condition).
     assert_eq!(line_height(10., InlineBoxKind::InFlow), 30.);
+    assert_eq!(line_height(0., InlineBoxKind::InFlow), 30.);
+}
+
+/// A zero-size in-flow box with `vertical-align: top` or `bottom` is content too: the strut
+/// applies (rinch-patch; Chrome gives such a line the block's line height).
+#[test]
+fn line_with_only_a_zero_size_line_relative_box_has_the_strut() {
+    let mut fcx = create_font_context();
+    let mut lcx: LayoutContext<ColorBrush> = LayoutContext::new();
+    let root = root_style();
+    for vertical_align in [VerticalAlign::TOP, VerticalAlign::BOTTOM] {
+        let mut builder = lcx.tree_builder(&mut fcx, 1., false, &root);
+        builder.push_inline_box(InlineBox {
+            id: 0,
+            kind: InlineBoxKind::InFlow,
+            index: 0,
+            width: 0.,
+            height: 0.,
+            baseline: None,
+            vertical_align,
+        });
+        let (mut layout, _) = builder.build();
+        layout.break_all_lines(None);
+        assert_eq!(layout.lines().next().unwrap().metrics().line_height, 30.);
+    }
+}
+
+/// A `CustomOutOfFlow` box (a float) that the caller places with no extents through
+/// `append_inline_box_to_line` is not content: a line holding only it stays invisible.
+#[test]
+fn line_with_only_a_custom_out_of_flow_box_is_invisible() {
+    let mut fcx = create_font_context();
+    let mut lcx: LayoutContext<ColorBrush> = LayoutContext::new();
+    let root = root_style();
+    let mut builder = lcx.tree_builder(&mut fcx, 1., false, &root);
+    builder.push_inline_box(InlineBox {
+        id: 0,
+        kind: InlineBoxKind::CustomOutOfFlow,
+        index: 0,
+        width: 0.,
+        height: 0.,
+        baseline: None,
+        vertical_align: VerticalAlign::BASELINE,
+    });
+    let (mut layout, _) = builder.build();
+    let mut breaker = layout.break_lines();
+    while let Some(data) = breaker.break_next() {
+        if let crate::YieldData::InlineBoxBreak(b) = data {
+            breaker.state_mut().append_inline_box_to_line(b.advance, 0.0, 0.0);
+        }
+    }
+    breaker.finish();
+    assert_eq!(layout.lines().next().unwrap().metrics().line_height, 0.);
 }
 
 /// With quantization, an inline box's fractional height must not be rounded up twice (once for

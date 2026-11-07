@@ -123,8 +123,15 @@ struct LineBoxMetrics {
     line_relative_top_height: f32,
     /// Height of the tallest `vertical-align: bottom` inline box.
     line_relative_bottom_height: f32,
-    /// Whether the line has any text or non-empty in-flow inline box. A line with only empty
-    /// inline boxes is treated as having zero height (an "invisible" line box).
+    /// Whether the line has any text or in-flow inline box. A line with neither is treated as
+    /// having zero height (an "invisible" line box).
+    ///
+    /// rinch-patch: an in-flow box is content whatever its size. CSS 2.2 § 9.4.2 counts "other
+    /// in-flow content (such as images, inline blocks or inline tables)" with no size condition,
+    /// and Chrome gives a line holding only a 0x0 image or inline-block the strut's height
+    /// (Blink's `InlineItem::ComputeBoxProperties` leaves an atomic inline non-empty). Upstream
+    /// treats a zero-size in-flow box as empty. A caller that wants a box which is not content
+    /// pushes it out of flow.
     has_content: bool,
     /// The layout item and style of the last text atom added, whose boxes are already on the line.
     last_text: (usize, u16),
@@ -463,19 +470,26 @@ impl LineBoxMetrics {
     /// Add an inline box extending `ascent` above and `descent` below a baseline that is
     /// `baseline_offset` above the baseline of the aligned subtree rooted at
     /// `aligned_subtree_root`.
+    ///
+    /// `in_flow` is whether the box is one of the layout's in-flow boxes, which is content
+    /// whatever its size (see `has_content`). A box a caller places through
+    /// [`BreakerState::append_inline_box_to_line`] (a `CustomOutOfFlow` box, such as a float)
+    /// is content only when it has extents.
     fn add_inline_box(
         &mut self,
         aligned_subtree_root: u16,
         baseline_offset: f32,
         ascent: f32,
         descent: f32,
+        in_flow: bool,
         subtrees: &mut SubtreeHistory,
     ) {
         // Inline box extents are exact box sizes supplied by the caller, not font metrics;
         // rounding them would change the space the box reserves relative to its height.
         // Negative margins can make the reserved space negative; the box is still content.
         // Out-of-flow boxes have infinitely negative extents and are not.
-        if (ascent != 0. || descent != 0.) && ascent.is_finite() && descent.is_finite() {
+        if (in_flow || ascent != 0. || descent != 0.) && ascent.is_finite() && descent.is_finite()
+        {
             self.has_content = true;
         }
         let inline_box = BoxMetrics {
@@ -491,9 +505,8 @@ impl LineBoxMetrics {
     /// box's height.
     fn add_line_relative_inline_box(&mut self, align: VerticalAlign, height: f32, quantize: bool) {
         let height = if quantize { height.round() } else { height };
-        if height > 0. {
-            self.has_content = true;
-        }
+        // In flow, so content whatever its height (see `has_content`).
+        self.has_content = true;
         let slot = match align.shift {
             BaselineShift::Bottom => &mut self.line_relative_bottom_height,
             _ => &mut self.line_relative_top_height,
@@ -698,7 +711,7 @@ impl BreakerState {
         self.line.x = next_x;
         self.line
             .box_metrics
-            .add_inline_box(0, 0., ascent, descent, &mut self.subtrees);
+            .add_inline_box(0, 0., ascent, descent, false, &mut self.subtrees);
         self.update_max_height_exceeded();
     }
 
@@ -726,6 +739,7 @@ impl BreakerState {
                 placement.baseline_offset,
                 placement.ascent,
                 placement.descent,
+                true,
                 &mut self.subtrees,
             );
         }
@@ -915,8 +929,8 @@ impl<'a, B: Brush> BreakLines<'a, B> {
             line_indent,
         );
 
-        // A line containing only empty inline boxes (and no text) is an invisible line box with
-        // zero height; the strut only applies once the line has content. The trailing empty line
+        // A line containing no text and no in-flow inline box (only out-of-flow ones) is an
+        // invisible line box with zero height; the strut only applies once the line has content. The trailing empty line
         // after a final newline has no items and keeps the strut so the cursor has a position.
         let invisible = !self.state.line.box_metrics.has_content
             && !self.lines.lines.last().unwrap().item_range.is_empty();
