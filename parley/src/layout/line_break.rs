@@ -488,8 +488,7 @@ impl LineBoxMetrics {
         // rounding them would change the space the box reserves relative to its height.
         // Negative margins can make the reserved space negative; the box is still content.
         // Out-of-flow boxes have infinitely negative extents and are not.
-        if (in_flow || ascent != 0. || descent != 0.) && ascent.is_finite() && descent.is_finite()
-        {
+        if (in_flow || ascent != 0. || descent != 0.) && ascent.is_finite() && descent.is_finite() {
             self.has_content = true;
         }
         let inline_box = BoxMetrics {
@@ -892,9 +891,28 @@ impl<'a, B: Brush> BreakLines<'a, B> {
     }
 
     /// Add the layout's inline box `index` to the current line. Out-of-flow boxes contribute
-    /// nothing to the line's metrics.
+    /// nothing to the line's metrics of their own.
+    ///
+    /// rinch-patch: the span box of the span holding an in-flow or out-of-flow box (and those of
+    /// its ancestors) is on the line too, as a text atom's are. CSS 2.2 § 10.8.1 gives every
+    /// inline box on the line its own strut, whether or not it holds a glyph: Chrome makes a line
+    /// holding `<span style="line-height: 60px"><img></span>` 60px tall, and an empty span in a
+    /// larger font lowers its line's baseline. Upstream adds a span box only from a text atom. A
+    /// span box does not make the line content (`has_content`), so a line of only out-of-flow
+    /// boxes stays invisible.
     fn append_layout_inline_box(&mut self, index: usize, next_x: f32) {
         let quantize = self.layout.data.quantize;
+        let layout_box = &self.layout.data.inline_boxes[index];
+        if layout_box.inline_box.kind != InlineBoxKind::CustomOutOfFlow {
+            let parent = layout_box.parent_style_index;
+            let state = &mut self.state;
+            state.line.box_metrics.add_style(
+                parent,
+                &self.layout.data.style_metrics,
+                &mut state.contributed,
+                &mut state.subtrees,
+            );
+        }
         let layout_box = &mut self.layout.data.inline_boxes[index];
         let inline_box = &layout_box.inline_box;
         if inline_box.kind == InlineBoxKind::InFlow {
@@ -1112,9 +1130,8 @@ impl<'a, B: Brush> BreakLines<'a, B> {
                     // when the content before does, or when the box's own parent does (Chrome:
                     // `<span style="white-space:pre-wrap">r<span style="white-space:pre">e f
                     // g</span><img></span>` breaks before the image).
-                    let parent_style_index = usize::from(
-                        self.layout.data.inline_boxes[item.index].parent_style_index,
-                    );
+                    let parent_style_index =
+                        usize::from(self.layout.data.inline_boxes[item.index].parent_style_index);
                     let box_wraps = self
                         .layout
                         .data

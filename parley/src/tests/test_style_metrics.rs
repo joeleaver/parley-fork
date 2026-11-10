@@ -498,3 +498,45 @@ fn breaking_after_reverting_to_a_default_state_does_not_panic() {
         assert!(line.metrics().line_height > 0.);
     }
 }
+
+/// The height of the one line of `root <span line-height: 80px>[box]</span>`, the span holding
+/// nothing but a zero-size box of `kind`.
+fn line_with_a_box_in_a_tall_span(kind: InlineBoxKind, text_before: bool) -> f32 {
+    let mut fcx = create_font_context();
+    let mut lcx: LayoutContext<ColorBrush> = LayoutContext::new();
+    let root = root_style();
+    let mut builder = lcx.tree_builder(&mut fcx, 1., false, &root);
+    if text_before {
+        builder.push_text("root ");
+    }
+    builder.push_style_span(TextStyle {
+        line_height: LineHeight::Absolute(80.),
+        ..root_style()
+    });
+    builder.push_inline_box(InlineBox {
+        id: 0,
+        kind,
+        index: 0,
+        width: 0.,
+        height: 0.,
+        baseline: None,
+        vertical_align: VerticalAlign::BASELINE,
+    });
+    builder.pop_style_span();
+    let (mut layout, _) = builder.build();
+    layout.break_all_lines(None);
+    layout.lines().next().unwrap().metrics().line_height
+}
+
+/// rinch-patch: a span holding only an inline box puts its span box on the line, as one holding
+/// text does (CSS 2.2 § 10.8.1; Chrome 157 makes `<span style="line-height: 60px"><img></span>`
+/// 60px tall). Upstream adds a span box only from a text atom, and the line is the strut's 30.
+#[test]
+fn a_span_holding_only_an_inline_box_puts_its_box_on_the_line() {
+    assert_eq!(line_with_a_box_in_a_tall_span(InlineBoxKind::InFlow, false), 80.);
+    assert_eq!(line_with_a_box_in_a_tall_span(InlineBoxKind::InFlow, true), 80.);
+    // An out-of-flow box in an otherwise empty span: the span box is on a line with text.
+    assert_eq!(line_with_a_box_in_a_tall_span(InlineBoxKind::OutOfFlow, true), 80.);
+    // A span box is not content: a line of only an out-of-flow box stays invisible.
+    assert_eq!(line_with_a_box_in_a_tall_span(InlineBoxKind::OutOfFlow, false), 0.);
+}
