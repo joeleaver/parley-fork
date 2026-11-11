@@ -59,6 +59,8 @@ pub use script::ScriptExt;
 
 pub use attributes::Attributes;
 pub use charmap::{Charmap, CharmapIndex};
+#[cfg(feature = "std")]
+pub use collection::SystemFontPaths;
 pub use collection::{
     Collection, CollectionOptions, Query, QueryFamily, QueryFont, QueryStatus, SystemFamilyMatch,
 };

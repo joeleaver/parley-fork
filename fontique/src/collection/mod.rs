@@ -150,6 +150,19 @@ impl Collection {
         self.inner.system_family_match(name)
     }
 
+    /// What the system font scan read, to watch for a change that makes it
+    /// out of date (a font installed, a font directory added to the
+    /// configuration). See [`SystemFontPaths`].
+    ///
+    /// Empty where the backend has no such list (only fontconfig has one),
+    /// and in a collection without system fonts. Each call asks the backend
+    /// for the lists of the configuration the scan was made with; it does not
+    /// read the configuration again.
+    #[cfg(feature = "std")]
+    pub fn system_font_paths(&self) -> SystemFontPaths {
+        self.inner.system_font_paths()
+    }
+
     /// Returns an iterator over the family identifiers for the given
     /// generic family.
     pub fn generic_families(
@@ -271,6 +284,29 @@ pub struct SystemFamilyMatch {
     /// The family names of the best-matching font (`FcFontMatch`), its
     /// first name first.
     pub matched: Vec<String>,
+}
+
+/// The files and directories a system font scan read, as
+/// [`Collection::system_font_paths`] returns them.
+///
+/// On fontconfig these are the lists of the configuration the scan was made
+/// with: a font installed into one of `font_dirs` (or one of them made where
+/// it did not exist), or a configuration file changed, added to one of
+/// `config_dirs` or edited among `config_files`, makes the scan out of date.
+/// Other backends return none.
+#[cfg(feature = "std")]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct SystemFontPaths {
+    /// The configuration files read (`FcConfigGetConfigFiles`).
+    pub config_files: Vec<std::path::PathBuf>,
+    /// The directories of configuration files the configuration includes,
+    /// such as `conf.d` (`FcConfigGetConfigDirs`).
+    pub config_dirs: Vec<std::path::PathBuf>,
+    /// The font directories: those the configuration names, whether or not
+    /// they exist, and every directory below them that the scan read
+    /// (`FcConfigGetFontDirs`).
+    pub font_dirs: Vec<std::path::PathBuf>,
 }
 
 /// Collection of fonts.
@@ -405,6 +441,15 @@ impl Inner {
         }
         let _ = name;
         None
+    }
+
+    #[cfg(feature = "std")]
+    pub fn system_font_paths(&self) -> SystemFontPaths {
+        #[cfg(all(feature = "system", any(target_os = "linux", target_os = "freebsd")))]
+        if let Some(system) = &self.system {
+            return system.fonts.lock().unwrap().paths();
+        }
+        SystemFontPaths::default()
     }
 
     /// Returns an iterator over the family identifiers for the given
@@ -1046,5 +1091,15 @@ mod tests {
             ..Default::default()
         });
         assert_eq!(collection.system_family_match("Arial"), None);
+    }
+
+    #[test]
+    #[cfg(feature = "std")]
+    fn no_system_font_paths_without_system_fonts() {
+        let collection = Collection::new(CollectionOptions {
+            system_fonts: false,
+            ..Default::default()
+        });
+        assert_eq!(collection.system_font_paths(), SystemFontPaths::default());
     }
 }

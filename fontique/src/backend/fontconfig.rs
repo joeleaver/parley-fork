@@ -10,8 +10,9 @@ use std::{
     borrow::Cow,
     ffi::{CString, OsStr},
     os::unix::ffi::OsStrExt,
-    path::Path,
+    path::{Path, PathBuf},
     sync::Arc,
+    vec::Vec,
 };
 
 #[cfg(feature = "fontconfig-dlopen")]
@@ -19,7 +20,7 @@ use fontconfig_sys::statics::{LIB, LIB_RESULT};
 use fontconfig_sys::{
     FcChar8, FcCharSet, FcConfig, FcFontSet, FcLangSet, FcMatchKind, FcMatchPattern, FcPattern,
     FcResult, FcResultMatch, FcResultNoId, FcResultNoMatch, FcResultOutOfMemory,
-    FcResultTypeMismatch, FcSetSystem,
+    FcResultTypeMismatch, FcSetSystem, FcStrList,
     constants::{
         FC_CHARSET, FC_FAMILY, FC_FILE, FC_INDEX, FC_LANG, FC_SCALABLE, FC_SLANT, FC_WEIGHT,
         FC_WIDTH,
@@ -29,11 +30,13 @@ use fontconfig_sys::{
 #[cfg(not(feature = "fontconfig-dlopen"))]
 use fontconfig_sys::{
     FcCharSetAddChar, FcCharSetCopy, FcCharSetCreate, FcCharSetDestroy, FcConfigBuildFonts,
-    FcConfigDestroy, FcConfigGetFonts, FcConfigReference, FcConfigSubstitute, FcDefaultSubstitute,
-    FcFontMatch, FcFontRenderPrepare, FcFontSetDestroy, FcFontSort, FcInitLoadConfig, FcLangSetAdd,
+    FcConfigDestroy, FcConfigGetConfigDirs, FcConfigGetConfigFiles, FcConfigGetFontDirs,
+    FcConfigGetFonts, FcConfigReference, FcConfigSubstitute, FcDefaultSubstitute, FcFontMatch,
+    FcFontRenderPrepare, FcFontSetDestroy, FcFontSort, FcInitLoadConfig, FcLangSetAdd,
     FcLangSetCopy, FcLangSetCreate, FcLangSetDestroy, FcNameUnparse, FcPatternAddBool,
     FcPatternAddCharSet, FcPatternAddLangSet, FcPatternAddString, FcPatternCreate,
     FcPatternDestroy, FcPatternGetInteger, FcPatternGetString, FcPatternReference, FcStrFree,
+    FcStrListDone, FcStrListNext,
 };
 
 use hashbrown::{HashMap, HashSet, hash_map::Entry};
@@ -562,6 +565,65 @@ impl Config {
             )
         }
     }
+
+    /// The files and directories this configuration read, and the font
+    /// directories it scanned.
+    fn paths(&self) -> crate::SystemFontPaths {
+        let config = self.inner.as_ptr();
+        // SAFETY: each `FcConfigGet*` returns a new string list over
+        // `config`, which outlives it; `paths_of` frees it.
+        unsafe {
+            crate::SystemFontPaths {
+                config_files: paths_of(ffi_dispatch!(
+                    feature = "fontconfig-dlopen",
+                    LIB,
+                    FcConfigGetConfigFiles,
+                    config
+                )),
+                config_dirs: paths_of(ffi_dispatch!(
+                    feature = "fontconfig-dlopen",
+                    LIB,
+                    FcConfigGetConfigDirs,
+                    config
+                )),
+                font_dirs: paths_of(ffi_dispatch!(
+                    feature = "fontconfig-dlopen",
+                    LIB,
+                    FcConfigGetFontDirs,
+                    config
+                )),
+            }
+        }
+    }
+}
+
+/// The paths in a fontconfig string list, copied out, and the list freed.
+///
+/// # Safety
+///
+/// `list` is null or a string list the caller owns (one an `FcConfigGet*`
+/// call returned), not used after this call.
+unsafe fn paths_of(list: *mut FcStrList) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    if list.is_null() {
+        return paths;
+    }
+    loop {
+        // SAFETY: `list` is a live list (above). The string it returns
+        // belongs to the list and stays valid until the next call; it is
+        // copied before that.
+        let next =
+            unsafe { ffi_dispatch!(feature = "fontconfig-dlopen", LIB, FcStrListNext, list) };
+        if next.is_null() {
+            break;
+        }
+        // SAFETY: fontconfig's strings are NUL-terminated.
+        let bytes = unsafe { CStr::from_ptr(next.cast::<c_char>()) }.to_bytes();
+        paths.push(PathBuf::from(OsStr::from_bytes(bytes)));
+    }
+    // SAFETY: the list is ours, and nothing from it is used after this.
+    unsafe { ffi_dispatch!(feature = "fontconfig-dlopen", LIB, FcStrListDone, list) };
+    paths
 }
 
 impl Clone for Config {
@@ -798,6 +860,12 @@ impl SystemFonts {
 }
 
 impl SystemFonts {
+    /// The files and directories the scan's configuration read, and the font
+    /// directories it scanned; empty without fontconfig.
+    pub(crate) fn paths(&self) -> crate::SystemFontPaths {
+        self.config.as_ref().map(Config::paths).unwrap_or_default()
+    }
+
     /// fontconfig's answer for the family `name`, asked as Chrome's Linux
     /// font manager asks it (Skia's `SkFontConfigInterfaceDirect::
     /// matchFamilyName`): a scalable, SFNT-wrapped pattern for `name`, with
