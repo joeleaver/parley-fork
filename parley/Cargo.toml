@@ -33,6 +33,9 @@ linebender_resource_handle = { workspace = true }
 fontique = { workspace = true }
 parlance = { workspace = true }
 parley_engine = { workspace = true }
+# RINCH (rinch #2542): an inline box's bidi level reads its neighbours' bidi classes. Already in
+# the graph through parley_engine.
+icu_properties = { workspace = true }
 core_maths = { version = "0.1.1", optional = true }
 hashbrown = { workspace = true }
 

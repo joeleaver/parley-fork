@@ -210,14 +210,12 @@ pub(crate) fn shape_text<'a, B: Brush>(
         // bidi algorithm, a neutral, so it takes the level its neighbours resolve it to
         // (`neutral_box_level`) rather than the previous run's, and a box with no run before it
         // the paragraph's, not 0: an rtl paragraph of inline boxes alone is laid out right to left.
-        let prev_bidi_level = if shaped_run_idx > 0 {
-            Some(layout.data.shaped_text.runs()[&shaped_run_idx - 1].bidi_level)
-        } else {
-            None
-        };
         let box_level = neutral_box_level(
-            prev_bidi_level,
-            Some(shaped_run.bidi_level),
+            text,
+            run_text_byte_start,
+            shaped_run.range.char_range.start,
+            analysis,
+            analysis_data_sources,
             layout.data.base_level,
         );
         while let Some((box_idx, inline_box)) = inline_box_iter.peek() {
@@ -245,8 +243,11 @@ pub(crate) fn shape_text<'a, B: Brush>(
     // Process any remaining inline boxes whose index is greater than the length of the text: the
     // paragraph's end follows them (RINCH, rinch #2542; `neutral_box_level`).
     let bidi_level = neutral_box_level(
-        layout.data.shaped_text.runs().last().map(|r| r.bidi_level),
-        None,
+        text,
+        text.len(),
+        analysis.char_info().len(),
+        analysis,
+        analysis_data_sources,
         layout.data.base_level,
     );
     for (box_idx, _inline_box) in inline_box_iter {
@@ -254,26 +255,71 @@ pub(crate) fn shape_text<'a, B: Brush>(
     }
 }
 
-/// RINCH (rinch #2542): the bidi level of an inline box between the run before it and the run after
-/// it (`None` at the paragraph's start or end), as UAX #9 resolves a neutral (rules N1 and N2): the
-/// level of its neighbours where both run in the same direction, the paragraph's `base` level
-/// otherwise — the paragraph's start and end count as running in its own direction. Levels stand
-/// in for the strong types around the box, which a run of one level shares.
+/// RINCH (rinch #2542): the bidi level UAX #9 gives an inline box at byte `byte` (char index
+/// `char_index`) of `text`, the object replacement character (U+FFFC, a neutral) it stands for.
+/// N1: between two characters that both run right to left, or both left to right, it takes that
+/// direction; N2: otherwise the paragraph's (`base`). The paragraph's start and end run in its own
+/// direction. I1/I2: a box whose direction is the paragraph's is at the paragraph's level, one
+/// against it a level above.
+///
+/// The characters beside the box were resolved without it, and a neutral among them took what the
+/// box would (it is in the same run of neutrals). Each one's direction comes from its resolved
+/// level, where European and Arabic numbers count as right to left (N1): in a left-to-right
+/// paragraph any level above it is right to left (a right-to-left character, or a number after
+/// one, at level 2); in a right-to-left paragraph an even level is left to right unless the
+/// character is an Arabic number, or a European number that does not follow a left-to-right
+/// character (W7).
 fn neutral_box_level(
-    before: Option<BidiLevel>,
-    after: Option<BidiLevel>,
+    text: &str,
+    byte: usize,
+    char_index: usize,
+    analysis: &Analysis,
+    data_sources: &AnalysisDataSources,
     base: BidiLevel,
 ) -> BidiLevel {
-    let before = before.unwrap_or(base);
-    let after = after.unwrap_or(base);
-    if before.is_rtl() == after.is_rtl() {
-        if before.to_u8() <= after.to_u8() {
-            before
+    use icu_properties::props::BidiClass as C;
+    let levels = analysis.bidi_levels();
+    let class = |ch: char| data_sources.properties(ch).bidi_class();
+    // Whether the character `ch` at char index `index` and byte `at` runs right to left.
+    let rtl = |ch: char, index: usize, at: usize| {
+        let level = levels.get(index).copied().unwrap_or(base);
+        if level.is_rtl() {
+            true
+        } else if base.is_ltr() {
+            level.to_u8() > base.to_u8()
         } else {
-            after
+            match class(ch) {
+                C::ArabicNumber => true,
+                C::EuropeanNumber => text[..at]
+                    .chars()
+                    .rev()
+                    .find_map(|c| match class(c) {
+                        C::LeftToRight => Some(false),
+                        C::RightToLeft | C::ArabicLetter => Some(true),
+                        _ => None,
+                    })
+                    .unwrap_or(true),
+                _ => false,
+            }
         }
+    };
+    let before = match text[..byte].chars().next_back() {
+        Some(ch) if char_index > 0 => rtl(ch, char_index - 1, byte - ch.len_utf8()),
+        _ => base.is_rtl(),
+    };
+    let after = match text[byte..].chars().next() {
+        Some(ch) => rtl(ch, char_index, byte),
+        None => base.is_rtl(),
+    };
+    let direction_rtl = if before == after {
+        before
     } else {
+        base.is_rtl()
+    };
+    if direction_rtl == base.is_rtl() {
         base
+    } else {
+        BidiLevel::new(base.to_u8() + 1)
     }
 }
 

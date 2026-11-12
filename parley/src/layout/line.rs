@@ -277,6 +277,16 @@ pub struct PositionedInlineBox {
     pub baseline: Option<f32>,
     pub id: u64,
     pub kind: InlineBoxKind,
+    /// RINCH (rinch #2542): the box's resolved bidi level, the one its line was reordered by: a
+    /// box at an odd level runs right to left, so what follows it is on its left.
+    pub bidi_level: parlance::BidiLevel,
+}
+
+impl PositionedInlineBox {
+    /// RINCH (rinch #2542): whether the box runs right to left ([`Self::bidi_level`] is odd).
+    pub fn is_rtl(&self) -> bool {
+        self.bidi_level.is_rtl()
+    }
 }
 
 /// Sequence of fully positioned glyphs with the same style.
@@ -433,9 +443,9 @@ impl<'a, B: Brush> Iterator for GlyphRunIter<'a, B> {
                     let x = self.offset
                         + self.line.data.metrics.inline_min_coord
                         + self.line.data.metrics.offset;
-                    let box_index = self.line.layout.data.line_items
-                        [self.line.data.item_range.start + self.item_index]
-                        .index;
+                    let line_item = &self.line.layout.data.line_items
+                        [self.line.data.item_range.start + self.item_index];
+                    let (box_index, bidi_level) = (line_item.index, line_item.bidi_level);
                     let y = self.line.inline_box_top(box_index);
 
                     self.item_index += 1;
@@ -450,6 +460,7 @@ impl<'a, B: Brush> Iterator for GlyphRunIter<'a, B> {
                         baseline: inline_box.baseline,
                         id: inline_box.id,
                         kind: inline_box.kind,
+                        bidi_level,
                     }));
                 }
                 LineItem::Run(run) => {
