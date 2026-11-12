@@ -201,3 +201,59 @@ fn a_box_beside_text_changes_how_the_neutrals_between_resolve() {
         vec![1]
     );
 }
+
+#[test]
+fn a_lines_trailing_whitespace_takes_the_paragraphs_level() {
+    // rinch #2594, UAX #9 L1: `אבג דהו` in a left-to-right paragraph, broken after the space. The
+    // space ends the first line at level 0, at its right, where it hangs; it used to stay in the
+    // Hebrew run at level 1, at the run's visual left, pushing the Hebrew right by its width. In a
+    // right-to-left paragraph, `abc def`'s space goes to level 1, at the line's left.
+    let mut fcx = create_font_context();
+    let mut lcx: LayoutContext<ColorBrush> = LayoutContext::new();
+    let root = TextStyle {
+        font_family: FontFamily::from(FONT_FAMILY_LIST),
+        font_size: 20.,
+        line_height: LineHeight::Absolute(30.),
+        ..TextStyle::default()
+    };
+    for (base, text) in [
+        (
+            BaseDirection::Ltr,
+            "\u{5d0}\u{5d1}\u{5d2} \u{5d3}\u{5d4}\u{5d5}",
+        ),
+        (BaseDirection::Rtl, "abc def"),
+    ] {
+        let mut builder = lcx.tree_builder(&mut fcx, 1., false, &root);
+        builder.set_base_direction(base);
+        builder.push_text(text);
+        let (mut layout, _) = builder.build();
+        layout.break_all_lines(Some(1.));
+        let line = layout.lines().next().unwrap();
+        let runs: Vec<_> = line
+            .items()
+            .filter_map(|item| match item {
+                PositionedLayoutItem::GlyphRun(g) => Some(g),
+                _ => None,
+            })
+            .collect();
+        let space = text.find(' ').unwrap();
+        let word = runs
+            .iter()
+            .find(|g| g.run().text_range().contains(&0))
+            .unwrap();
+        let space_run = runs
+            .iter()
+            .find(|g| g.run().text_range().contains(&space))
+            .unwrap();
+        assert!(
+            word.offset() != space_run.offset(),
+            "{base:?}: the space is not in the word's item"
+        );
+        if base == BaseDirection::Ltr {
+            assert_eq!(word.offset(), 0., "the Hebrew starts the line");
+            assert!(space_run.offset() >= word.offset() + word.advance() - 0.01);
+        } else {
+            assert!(space_run.offset() + space_run.advance() <= word.offset() + 0.01);
+        }
+    }
+}

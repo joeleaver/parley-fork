@@ -1823,9 +1823,6 @@ fn commit_line<B: Brush>(
             }
         }
     }
-    // let end_run_idx = lines.line_items.last().map(|item| item.index).unwrap_or(0);
-    let end_item_idx = lines.line_items.len();
-
     // Trailing whitespace under `WhiteSpaceCollapse::Preserve` directly preceding a forced break
     // hangs conditionally (CSS Text 4 § 4.3.2): only the part that doesn't fit hangs. Whitespace
     // that fits, stays inside the line box, and counts towards alignment and the layout width. The
@@ -1839,6 +1836,10 @@ fn commit_line<B: Brush>(
         BreakReason::Regular | BreakReason::Emergency => f32::INFINITY,
         BreakReason::Explicit | BreakReason::None => state.x - max_advance,
     };
+    // RINCH (rinch #2594): UAX #9 L1, before the whitespace hangs: it hangs only at the paragraph's
+    // level.
+    reset_trailing_whitespace_levels(layout, &mut lines.line_items, start_item_idx);
+    let end_item_idx = lines.line_items.len();
     let (hanging_advance, justification_end_cluster, hanging_opportunities) = hanging_whitespace(
         layout,
         &lines.line_items[start_item_idx..end_item_idx],
@@ -1945,9 +1946,9 @@ fn hanging_whitespace<B: Brush>(
             }
             LayoutItemKind::TextRun => {
                 // Trailing whitespace can only hang if it ends up at the line's end edge after bidi
-                // reordering. We don't currently apply UAX #9 L1 (resetting trailing whitespace to
-                // paragraph level), so only logically-last items that match the paragraph level are
-                // guaranteed to be at that edge.
+                // reordering. RINCH (rinch #2594): `reset_trailing_whitespace_levels` (UAX #9 L1)
+                // has put the line's trailing whitespace at the paragraph's level, so an item at
+                // another level ends in something that is not whitespace.
                 if line_item.bidi_level != layout.data.base_level {
                     break;
                 }
@@ -2016,6 +2017,82 @@ fn hanging_whitespace<B: Brush>(
         justification_end_cluster,
         hanging_opportunities,
     )
+}
+
+/// RINCH (rinch #2594): UAX #9 rule L1 for the line whose items are `line_items[start..]`, in
+/// logical order: the whitespace at the line's end — spaces, tabs and other space separators (not a
+/// no-break space, class CS), with the zero-width atoms among them (bidi controls, which X9
+/// removed and which take a neighbour's level) — is reset to the paragraph's level, splitting the
+/// text item it ends. A line of Hebrew in a left-to-right paragraph then ends in its own spaces at
+/// the right, where they hang (`hanging_whitespace` hangs only items at the paragraph's level),
+/// rather than at the Hebrew's visual left, inside the line; Chrome applies L1 too.
+fn reset_trailing_whitespace_levels<B: Brush>(
+    layout: &Layout<B>,
+    line_items: &mut Vec<LineItemData>,
+    start: usize,
+) {
+    let base = layout.data.base_level;
+    let shaped_text = &layout.data.shaped_text;
+    let trailing = |atom: &Atom<'_>| match atom.characters()[0].whitespace {
+        Whitespace::Space
+        | Whitespace::IdeographicSpace
+        | Whitespace::OtherSpaceSeparator
+        | Whitespace::Tab
+        | Whitespace::Newline => true,
+        Whitespace::None => atom.advance() == 0.,
+        Whitespace::NoBreakSpace | Whitespace::ControlWhitespace => false,
+    };
+    let mut idx = line_items.len();
+    while idx > start {
+        idx -= 1;
+        let item = &line_items[idx];
+        if item.kind == LayoutItemKind::InlineBox {
+            if layout.data.inline_boxes[item.index].inline_box.kind == InlineBoxKind::InFlow {
+                return;
+            }
+            continue;
+        }
+        if item.shaped_cluster_range.is_empty() {
+            continue;
+        }
+        let slice = shaped_text
+            .run_slice(item.index as u32)
+            .narrow(item.shaped_cluster_range.clone());
+        // The first cluster of the item's trailing whitespace.
+        let mut from = item.shaped_cluster_range.end;
+        for atom in slice.atoms_end().rev() {
+            if !trailing(&atom) {
+                break;
+            }
+            from = atom.shaped_clusters_range().start;
+        }
+        if from == item.shaped_cluster_range.end {
+            return;
+        }
+        if item.bidi_level != base {
+            if from == item.shaped_cluster_range.start {
+                line_items[idx].bidi_level = base;
+            } else {
+                let char_at = |cluster: u32| {
+                    shaped_text.shaped_clusters()[cluster as usize]
+                        .chars_range()
+                        .start
+                };
+                let split = slice.text_byte_at(char_at(from));
+                let mut tail = line_items[idx].clone();
+                let head = &mut line_items[idx];
+                head.shaped_cluster_range.end = from;
+                head.text_range.end = split;
+                tail.shaped_cluster_range.start = from;
+                tail.text_range.start = split;
+                tail.bidi_level = base;
+                line_items.insert(idx + 1, tail);
+                return;
+            }
+        } else if from != item.shaped_cluster_range.start {
+            return;
+        }
+    }
 }
 
 /// Reorder items within line according to the bidi levels of the items
