@@ -554,3 +554,39 @@ fn a_span_holding_only_an_inline_box_puts_its_box_on_the_line() {
         0.
     );
 }
+
+#[test]
+fn the_prior_lines_text_range_holds_a_soft_hyphen_it_ends_with() {
+    // rinch #2604: a line broken after a soft hyphen has the advance of the text before it; the
+    // range says that the hyphen is on it.
+    let mut fcx = create_font_context();
+    let mut lcx: LayoutContext<ColorBrush> = LayoutContext::new();
+    let mut builder = lcx.tree_builder(&mut fcx, 1., false, &root_style());
+    builder.push_text("Extra\u{ad}ordinary");
+    builder.push_inline_box(InlineBox {
+        id: 0,
+        kind: InlineBoxKind::InFlow,
+        index: "Extra\u{ad}ordinary".len(),
+        width: 300.,
+        height: 10.,
+        baseline: None,
+        vertical_align: VerticalAlign::BASELINE,
+    });
+    let (mut layout, _) = builder.build();
+
+    let mut breaker = layout.break_lines();
+    assert_eq!(breaker.prior_line_text_range(), None, "no line yet");
+    breaker.state_mut().set_layout_max_advance(1.);
+    breaker.state_mut().set_line_max_advance(1.);
+    breaker.break_next().unwrap();
+    assert_eq!(breaker.prior_line_text_range(), Some(0..7));
+    // A line committed by length: `o` alone.
+    breaker.break_next_with_length(1).unwrap();
+    assert_eq!(breaker.prior_line_text_range(), Some(7..8));
+    breaker.break_next_with_length(7).unwrap();
+    assert_eq!(breaker.prior_line_text_range(), Some(8..15));
+    // A line of the box alone holds no text.
+    breaker.break_next_with_length(1).unwrap();
+    assert_eq!(breaker.prior_line_text_range(), None);
+    breaker.finish();
+}

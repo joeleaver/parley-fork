@@ -1024,6 +1024,21 @@ impl<'a, B: Brush> BreakLines<'a, B> {
         }
     }
 
+    /// The range of the source text the last committed line holds, `None` before the first
+    /// line is committed or when that line holds no text (only inline boxes).
+    ///
+    /// RINCH (rinch #2604): a caller that commits lines of its own by length
+    /// ([`Self::break_next_with_length`]) counts from where the breaker's last line ended. That
+    /// line's advance alone cannot place a zero-width character at its end (a soft hyphen, a
+    /// zero-width space): this says on which side of the break it is.
+    pub fn prior_line_text_range(&self) -> Option<Range<usize>> {
+        self.lines
+            .lines
+            .last()
+            .map(|line| line.text_range.clone())
+            .filter(|range| range.start <= range.end)
+    }
+
     /// Reverts the to an externally saved state.
     pub fn revert_to(&mut self, state: BreakerState) {
         self.state = state;
