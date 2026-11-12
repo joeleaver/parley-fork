@@ -1765,6 +1765,8 @@ fn commit_line<B: Brush>(
                     shaped_cluster_range: 0..0,
                     text_range: 0..0,
                 });
+                // RINCH (rinch #2542): a box in a right-to-left paragraph is reordered too.
+                needs_reorder |= item.bidi_level != BidiLevel::new(0);
 
                 last_item_kind = item.kind;
             }

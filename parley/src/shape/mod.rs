@@ -64,9 +64,12 @@ pub(crate) fn shape_text<'a, B: Brush>(
     // Do nothing if there is no text or styles (there should always be a default style)
     if text.is_empty() || styles.is_empty() {
         // Process any remaining inline boxes whose index is greater than the length of the text
+        // RINCH (rinch #2542): at the paragraph's level, so an rtl paragraph of boxes alone runs
+        // right to left.
+        let level = layout.data.base_level;
         for box_idx in 0..inline_boxes.len() {
             // Push the box to the list of items
-            layout.data.push_inline_box(box_idx, BidiLevel::new(0));
+            layout.data.push_inline_box(box_idx, level);
         }
         return;
     }
@@ -203,17 +206,23 @@ pub(crate) fn shape_text<'a, B: Brush>(
 
         // Push inline boxes positioned before the start of this item.
         //
-        // TODO: this lets the inline box take the bidi level of the previous run, but in principle
-        // inline boxes should be included in bidi analysis as an object replacement character
-        // (U+FFFC). The box should then take the bidi level of that character.
+        // RINCH (rinch #2542): an inline box is an object replacement character (U+FFFC) to the
+        // bidi algorithm, a neutral, so it takes the level its neighbours resolve it to
+        // (`neutral_box_level`) rather than the previous run's, and a box with no run before it
+        // the paragraph's, not 0: an rtl paragraph of inline boxes alone is laid out right to left.
         let prev_bidi_level = if shaped_run_idx > 0 {
-            layout.data.shaped_text.runs()[&shaped_run_idx - 1].bidi_level
+            Some(layout.data.shaped_text.runs()[&shaped_run_idx - 1].bidi_level)
         } else {
-            BidiLevel::new(0)
+            None
         };
+        let box_level = neutral_box_level(
+            prev_bidi_level,
+            Some(shaped_run.bidi_level),
+            layout.data.base_level,
+        );
         while let Some((box_idx, inline_box)) = inline_box_iter.peek() {
             if inline_box.index <= run_text_byte_start {
-                layout.data.push_inline_box(*box_idx, prev_bidi_level);
+                layout.data.push_inline_box(*box_idx, box_level);
                 inline_box_iter.next();
             } else {
                 break;
@@ -233,19 +242,38 @@ pub(crate) fn shape_text<'a, B: Brush>(
         );
     }
 
-    // Process any remaining inline boxes whose index is greater than the length of the text
-    //
-    // Give the box the same bidi level as the last text run (or else default to 0 if there is no
-    // text run).
-    let bidi_level = layout
-        .data
-        .shaped_text
-        .runs()
-        .last()
-        .map(|r| r.bidi_level)
-        .unwrap_or(BidiLevel::new(0));
+    // Process any remaining inline boxes whose index is greater than the length of the text: the
+    // paragraph's end follows them (RINCH, rinch #2542; `neutral_box_level`).
+    let bidi_level = neutral_box_level(
+        layout.data.shaped_text.runs().last().map(|r| r.bidi_level),
+        None,
+        layout.data.base_level,
+    );
     for (box_idx, _inline_box) in inline_box_iter {
         layout.data.push_inline_box(box_idx, bidi_level);
+    }
+}
+
+/// RINCH (rinch #2542): the bidi level of an inline box between the run before it and the run after
+/// it (`None` at the paragraph's start or end), as UAX #9 resolves a neutral (rules N1 and N2): the
+/// level of its neighbours where both run in the same direction, the paragraph's `base` level
+/// otherwise — the paragraph's start and end count as running in its own direction. Levels stand
+/// in for the strong types around the box, which a run of one level shares.
+fn neutral_box_level(
+    before: Option<BidiLevel>,
+    after: Option<BidiLevel>,
+    base: BidiLevel,
+) -> BidiLevel {
+    let before = before.unwrap_or(base);
+    let after = after.unwrap_or(base);
+    if before.is_rtl() == after.is_rtl() {
+        if before.to_u8() <= after.to_u8() {
+            before
+        } else {
+            after
+        }
+    } else {
+        base
     }
 }
 
