@@ -1230,6 +1230,45 @@ fn test_line_break_override_applies_under_anywhere() {
     assert_eq!(test_context.soft_wrap_opportunity_list(), vec![false; 5]);
 }
 
+/// The override is told the `word-break` and `line-break` of the text after the pair, so that a
+/// pair table can step aside where they add opportunities (rinch #2388).
+#[test]
+fn test_line_break_override_sees_word_break_and_line_break() {
+    use std::sync::Mutex;
+    // The override must be `'static`.
+    static SEEN: Mutex<Vec<(char, WordBreak, LineBreak)>> = Mutex::new(Vec::new());
+    let mut test_context = TestContext::default();
+    {
+        let text = "abcdef";
+        let mut builder = test_context.layout_context.ranged_builder(
+            &mut test_context.font_context,
+            text,
+            1.,
+            true,
+        );
+        builder.push(StyleProperty::WordBreak(WordBreak::BreakAll), 2..4);
+        builder.push(StyleProperty::LineBreak(LineBreak::Anywhere), 4..6);
+        let record = |cx: crate::LineBreakContext| {
+            SEEN.lock()
+                .unwrap()
+                .push((cx.after, cx.word_break, cx.line_break));
+            None
+        };
+        builder.set_line_break_override(Some(&record));
+        _ = builder.build(text);
+    }
+    assert_eq!(
+        *SEEN.lock().unwrap(),
+        vec![
+            ('b', WordBreak::Normal, LineBreak::Strict),
+            ('c', WordBreak::BreakAll, LineBreak::Strict),
+            ('d', WordBreak::BreakAll, LineBreak::Strict),
+            ('e', WordBreak::Normal, LineBreak::Anywhere),
+            ('f', WordBreak::Normal, LineBreak::Anywhere),
+        ]
+    );
+}
+
 #[test]
 fn test_line_break_anywhere_graphemes() {
     // Opportunities are around grapheme clusters, not code points: a Hangul syllable of conjoining

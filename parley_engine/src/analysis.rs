@@ -636,6 +636,9 @@ pub(crate) fn analyze_text(
         .filter(|(_, config)| config.line_break == LineBreak::Anywhere)
         .map(|(range, _)| range)
         .peekable();
+    // The line break configuration of each character, for the override's context: the sparse
+    // ranges of `options.line_break`, the default between them.
+    let mut config_iter = options.line_break.iter().peekable();
     let boundary_iter = text.char_indices().map(|(byte_pos, ch)| {
         // advance any stale word boundary positions
         while let Some(&w) = wb_iter.peek() {
@@ -738,10 +741,23 @@ pub(crate) fn analyze_text(
             // Consumers can override soft wrap opportunities, except around a mandatory
             // break.
             if let (Some(prev), Some(lb_override)) = (prev_char, options.line_break_override) {
+                while config_iter
+                    .peek()
+                    .is_some_and(|(range, _)| range.end <= byte_pos)
+                {
+                    _ = config_iter.next();
+                }
+                let config = config_iter
+                    .peek()
+                    .filter(|(range, _)| range.contains(&byte_pos))
+                    .map(|(_, config)| *config)
+                    .unwrap_or_default();
                 let forced = lb_override(LineBreakContext {
                     before_before: prev_prev_char,
                     before: prev,
                     after: ch,
+                    word_break: config.word_break,
+                    line_break: config.line_break,
                 });
                 if let Some(forced) = forced {
                     opportunity = forced;

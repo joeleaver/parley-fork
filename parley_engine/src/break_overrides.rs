@@ -5,6 +5,8 @@
 
 use core::ops::RangeInclusive;
 
+use parlance::{LineBreak, WordBreak};
+
 /// Context for a potential line break opportunity between two adjacent code points.
 #[derive(Clone, Copy, Debug)]
 #[non_exhaustive]
@@ -15,6 +17,16 @@ pub struct LineBreakContext {
     pub before: char,
     /// The code point after the potential break.
     pub after: char,
+    /// CSS `word-break` of the text the `after` code point is in.
+    ///
+    /// An override that answers by character pairs can step aside for the ranges this names: CSS
+    /// `word-break: break-all` adds opportunities within words that a pair table would remove.
+    pub word_break: WordBreak,
+    /// CSS `line-break` of the text the `after` code point is in.
+    ///
+    /// Under [`LineBreak::Anywhere`] the default already has an opportunity around every grapheme
+    /// cluster; an override that answers by character pairs can step aside there.
+    pub line_break: LineBreak,
 }
 
 /// Line break opportunity override.
@@ -329,6 +341,8 @@ mod tests {
             before_before,
             before,
             after,
+            word_break: parlance::WordBreak::Normal,
+            line_break: parlance::LineBreak::Strict,
         }
     }
 
