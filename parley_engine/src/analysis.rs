@@ -45,6 +45,10 @@ pub struct Analysis {
 
     /// The base bidi level of the paragraph of text.
     pub(crate) paragraph_level: BidiLevel,
+
+    /// RINCH (rinch #2588): the bidi level of each inline box of
+    /// [`AnalysisOptions::inline_boxes`], in its order.
+    pub(crate) box_levels: Vec<BidiLevel>,
 }
 
 impl Analysis {
@@ -60,6 +64,7 @@ impl Analysis {
     pub(crate) fn clear(&mut self) {
         self.info.clear();
         self.levels.clear();
+        self.box_levels.clear();
         self.paragraph_level = BidiLevel::new(0);
     }
 
@@ -81,6 +86,14 @@ impl Analysis {
     #[inline(always)]
     pub fn paragraph_level(&self) -> BidiLevel {
         self.paragraph_level
+    }
+
+    /// RINCH (rinch #2588): the bidi level of each inline box named by
+    /// [`AnalysisOptions::inline_boxes`], in that order: the level UAX #9 gives the object
+    /// replacement character (U+FFFC) the box stands for.
+    #[inline(always)]
+    pub fn inline_box_levels(&self) -> &[BidiLevel] {
+        &self.box_levels
     }
 }
 
@@ -538,6 +551,9 @@ pub(crate) fn analyze_text(
             .bidi
             .resolve(core::iter::empty(), options.base_direction);
         analysis.paragraph_level = analyzer.bidi.base_level();
+        analysis
+            .box_levels
+            .resize(options.inline_boxes.len(), analysis.paragraph_level);
         return;
     }
 
@@ -825,18 +841,67 @@ pub(crate) fn analyze_text(
     }
 
     if needs_bidi_resolution || options.base_direction == BaseDirection::Rtl {
-        analyzer.bidi.resolve(
-            text.chars().map(|ch| {
-                let bidi_class = data_sources.properties(ch).bidi_class();
-                // TODO: maybe extend Properties to u64 to fit BidiMirroringGlyph
-                let bracket = data_sources.brackets().get(ch);
-                (ch, (bidi_class, bracket))
-            }),
-            options.base_direction,
-        );
-        core::mem::swap(&mut analysis.levels, &mut analyzer.bidi.levels);
+        let boxes = options.inline_boxes;
+        if boxes.is_empty() {
+            analyzer.bidi.resolve(
+                text.chars().map(|ch| {
+                    let bidi_class = data_sources.properties(ch).bidi_class();
+                    // TODO: maybe extend Properties to u64 to fit BidiMirroringGlyph
+                    let bracket = data_sources.brackets().get(ch);
+                    (ch, (bidi_class, bracket))
+                }),
+                options.base_direction,
+            );
+            core::mem::swap(&mut analysis.levels, &mut analyzer.bidi.levels);
+        } else {
+            // RINCH (rinch #2588): each inline box is an object replacement character at its
+            // index, resolved with the text and then taken out of it.
+            const OBJECT: char = '\u{fffc}';
+            let object = (
+                data_sources.properties(OBJECT).bidi_class(),
+                data_sources.brackets().get(OBJECT),
+            );
+            let mut next_box = 0;
+            let merged = text
+                .char_indices()
+                .map(Some)
+                .chain(core::iter::once(None))
+                .flat_map(|item| {
+                    let at = item.map_or(text.len(), |(at, _)| at);
+                    let from = next_box;
+                    while next_box < boxes.len() && boxes[next_box] <= at {
+                        next_box += 1;
+                    }
+                    let objects = (from..next_box).map(move |_| (OBJECT, object));
+                    let ch = item.map(|(_, ch)| {
+                        let bidi_class = data_sources.properties(ch).bidi_class();
+                        let bracket = data_sources.brackets().get(ch);
+                        (ch, (bidi_class, bracket))
+                    });
+                    objects.chain(ch)
+                });
+            analyzer.bidi.resolve(merged, options.base_direction);
+            // Split the boxes' levels out, in the order they were merged in.
+            let mut level = analyzer.bidi.levels.iter().copied();
+            let mut next_box = 0;
+            analysis.levels.clear();
+            for (at, _) in text.char_indices() {
+                while next_box < boxes.len() && boxes[next_box] <= at {
+                    analysis.box_levels.extend(level.next());
+                    next_box += 1;
+                }
+                analysis.levels.extend(level.next());
+            }
+            while next_box < boxes.len() && boxes[next_box] <= text.len() {
+                analysis.box_levels.extend(level.next());
+                next_box += 1;
+            }
+        }
         analysis.paragraph_level = analyzer.bidi.base_level();
     }
+    analysis
+        .box_levels
+        .resize(options.inline_boxes.len(), analysis.paragraph_level);
 }
 
 /// All characters contribute to shaping except:

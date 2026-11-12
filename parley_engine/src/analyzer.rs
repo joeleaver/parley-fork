@@ -90,6 +90,16 @@ pub struct AnalysisOptions<'a> {
     ///
     /// See [`LineBreakOverrideFn`] for more details.
     pub line_break_override: Option<&'a LineBreakOverrideFn>,
+
+    /// RINCH (rinch #2588): the byte index of every inline box in the text, ascending (boxes at
+    /// one index in their order).
+    ///
+    /// Each takes part in the bidi algorithm as the object replacement character (U+FFFC, a
+    /// neutral) it stands for, at its index, as a browser's inline layout puts one in its text:
+    /// its level is resolved with the text's explicit embeddings, isolates and overrides around
+    /// it, and with the neutral rules (UAX #9 N1/N2) beside its neighbours, and the text's own
+    /// levels are resolved with it there. [`Analysis::inline_box_levels`] holds the result.
+    pub inline_boxes: &'a [usize],
 }
 
 impl core::fmt::Debug for AnalysisOptions<'_> {
@@ -98,6 +108,7 @@ impl core::fmt::Debug for AnalysisOptions<'_> {
             .field("base_direction", &self.base_direction)
             .field("line_break", &self.line_break)
             .field("break_spaces", &self.break_spaces)
+            .field("inline_boxes", &self.inline_boxes)
             .finish_non_exhaustive()
     }
 }

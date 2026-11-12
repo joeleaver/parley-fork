@@ -365,7 +365,9 @@ fn line_with_only_a_custom_out_of_flow_box_is_invisible() {
     let mut breaker = layout.break_lines();
     while let Some(data) = breaker.break_next() {
         if let crate::YieldData::InlineBoxBreak(b) = data {
-            breaker.state_mut().append_inline_box_to_line(b.advance, 0.0, 0.0);
+            breaker
+                .state_mut()
+                .append_inline_box_to_line(b.advance, 0.0, 0.0);
         }
     }
     breaker.finish();
@@ -533,10 +535,22 @@ fn line_with_a_box_in_a_tall_span(kind: InlineBoxKind, text_before: bool) -> f32
 /// 60px tall). Upstream adds a span box only from a text atom, and the line is the strut's 30.
 #[test]
 fn a_span_holding_only_an_inline_box_puts_its_box_on_the_line() {
-    assert_eq!(line_with_a_box_in_a_tall_span(InlineBoxKind::InFlow, false), 80.);
-    assert_eq!(line_with_a_box_in_a_tall_span(InlineBoxKind::InFlow, true), 80.);
+    assert_eq!(
+        line_with_a_box_in_a_tall_span(InlineBoxKind::InFlow, false),
+        80.
+    );
+    assert_eq!(
+        line_with_a_box_in_a_tall_span(InlineBoxKind::InFlow, true),
+        80.
+    );
     // An out-of-flow box in an otherwise empty span: the span box is on a line with text.
-    assert_eq!(line_with_a_box_in_a_tall_span(InlineBoxKind::OutOfFlow, true), 80.);
+    assert_eq!(
+        line_with_a_box_in_a_tall_span(InlineBoxKind::OutOfFlow, true),
+        80.
+    );
     // A span box is not content: a line of only an out-of-flow box stays invisible.
-    assert_eq!(line_with_a_box_in_a_tall_span(InlineBoxKind::OutOfFlow, false), 0.);
+    assert_eq!(
+        line_with_a_box_in_a_tall_span(InlineBoxKind::OutOfFlow, false),
+        0.
+    );
 }

@@ -496,10 +496,10 @@ impl ContentWidthsMeasurer {
                     let slice = layout_data.shaped_text.run_slice(item.index as u32);
                     let run_spacing = layout_data.runs[item.index].spacing;
                     // Trailing whitespace can only hang if it ends up at the line's end edge after
-                    // bidi reordering. We don't currently apply UAX #9 L1 (resetting trailing
-                    // whitespace to paragraph level), so only logically-last items that match the
-                    // paragraph level are guaranteed to be at that edge.
-                    let can_hang = item.bidi_level == layout_data.base_level;
+                    // bidi reordering. RINCH (rinch #2594): the line breaker applies UAX #9 L1
+                    // (`reset_trailing_whitespace_levels`), resetting a line's trailing whitespace
+                    // to the paragraph's level, which puts it at that edge whatever its run's level.
+                    let can_hang = true;
                     let is_rtl = item.bidi_level.is_rtl();
 
                     if run_spacing.is_zero() {
