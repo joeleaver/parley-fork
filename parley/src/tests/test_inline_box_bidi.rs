@@ -149,3 +149,55 @@ fn a_box_between_directions_takes_the_paragraphs() {
         vec![1]
     );
 }
+
+#[test]
+fn boxes_take_the_embedding_controls_around_them() {
+    // rinch #2588: a box is resolved with the explicit embeddings, isolates and overrides around
+    // it, as the object replacement character it stands for. Chrome 157, `direction: rtl` with
+    // `a <span direction:ltr unicode-bidi:embed>b e</span>`: `a` at the right, then `b e` left
+    // to right (LRE … PDF).
+    assert_eq!(
+        boxes(
+            BaseDirection::Rtl,
+            &[None, Some("\u{202a}"), None, None, Some("\u{202c}")]
+        ),
+        (vec![1, 2, 2], vec![1, 2, 0])
+    );
+    // A `ltr` paragraph, `a <span direction:rtl unicode-bidi:isolate>b e</span>`: `b e` right to
+    // left after `a` (RLI … PDI).
+    assert_eq!(
+        boxes(
+            BaseDirection::Ltr,
+            &[None, Some("\u{2067}"), None, None, Some("\u{2069}")]
+        ),
+        (vec![0, 1, 1], vec![0, 2, 1])
+    );
+    // An override makes a box strong: RLO … PDF in a `ltr` paragraph, between Latin letters.
+    assert_eq!(
+        boxes(
+            BaseDirection::Ltr,
+            &[Some("ab\u{202e}"), None, None, Some("\u{202c}cd")]
+        ),
+        (vec![1, 1], vec![1, 0])
+    );
+    // The isolate's content does not reach the box beside it: `abc RLI א PDI <A> def` keeps the
+    // box left to right, between `abc` and `def`.
+    assert_eq!(
+        boxes(
+            BaseDirection::Ltr,
+            &[Some("abc \u{2067}\u{5d0}\u{2069}"), None, Some("def")]
+        )
+        .0,
+        vec![0]
+    );
+}
+
+#[test]
+fn a_box_beside_text_changes_how_the_neutrals_between_resolve() {
+    // `א <A> 1`: the space and the box are one run of neutrals between R and EN (as R), so both
+    // are right to left in a `ltr` paragraph.
+    assert_eq!(
+        boxes(BaseDirection::Ltr, &[Some("\u{5d0} "), None, Some(" 1")]).0,
+        vec![1]
+    );
+}

@@ -50,11 +50,18 @@ pub(crate) fn analyze_text<B: Brush>(
         }
     }
 
+    // RINCH (rinch #2588): the inline boxes take part in the bidi algorithm, as object
+    // replacement characters (`AnalysisOptions::inline_boxes`). They are sorted already.
+    lcx.inline_box_indices.clear();
+    lcx.inline_box_indices
+        .extend(lcx.inline_boxes.iter().map(|b| b.inline_box.index));
+
     let options = AnalysisOptions {
         base_direction,
         line_break: &lcx.line_break,
         break_spaces: &lcx.break_spaces,
         line_break_override,
+        inline_boxes: &lcx.inline_box_indices,
     };
     lcx.analyzer.analyze(text, &options, &mut lcx.analysis);
 }

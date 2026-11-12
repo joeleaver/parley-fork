@@ -488,8 +488,7 @@ impl LineBoxMetrics {
         // rounding them would change the space the box reserves relative to its height.
         // Negative margins can make the reserved space negative; the box is still content.
         // Out-of-flow boxes have infinitely negative extents and are not.
-        if (in_flow || ascent != 0. || descent != 0.) && ascent.is_finite() && descent.is_finite()
-        {
+        if (in_flow || ascent != 0. || descent != 0.) && ascent.is_finite() && descent.is_finite() {
             self.has_content = true;
         }
         let inline_box = BoxMetrics {
@@ -1131,9 +1130,8 @@ impl<'a, B: Brush> BreakLines<'a, B> {
                     // when the content before does, or when the box's own parent does (Chrome:
                     // `<span style="white-space:pre-wrap">r<span style="white-space:pre">e f
                     // g</span><img></span>` breaks before the image).
-                    let parent_style_index = usize::from(
-                        self.layout.data.inline_boxes[item.index].parent_style_index,
-                    );
+                    let parent_style_index =
+                        usize::from(self.layout.data.inline_boxes[item.index].parent_style_index);
                     let box_wraps = self
                         .layout
                         .data
