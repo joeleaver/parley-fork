@@ -377,6 +377,27 @@ fn a_zero_height_box_after_the_soft_hyphen_is_looked_past() {
     let first = layout.lines().next().unwrap();
     assert_eq!(&text[first.text_range()], "Extra\u{ad}");
     close(first.metrics().advance, extra + h + 3.);
+    // With an earlier opportunity that fits, it is taken instead (the break after the box would
+    // need the hyphen too).
+    let mut fcx = create_font_context();
+    let mut lcx: LayoutContext<ColorBrush> = LayoutContext::new();
+    let root = root_style();
+    let mut builder = lcx.tree_builder(&mut fcx, 1., false, &root);
+    builder.push_text("123 Extra\u{ad}");
+    builder.push_inline_box(crate::InlineBox {
+        id: 0,
+        kind: crate::InlineBoxKind::InFlow,
+        index: "123 Extra\u{ad}".len(),
+        width: 3.,
+        height: 0.,
+        baseline: None,
+        vertical_align: crate::VerticalAlign::BASELINE,
+    });
+    builder.push_text("ordinary");
+    let (mut layout, _) = builder.build();
+    layout.break_all_lines(Some(width("123 Extra") + 3. + h / 2.));
+    let first = layout.lines().next().unwrap();
+    assert_eq!(first.text_range(), 0..4, "`123 ` alone");
     // A box with a height (an atomic inline) after it ends the piece here: no hyphen.
     let mut layout = build_edge(10.);
     layout.break_all_lines(Some(extra + 3. + h / 2.));

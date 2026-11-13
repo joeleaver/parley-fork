@@ -1248,8 +1248,17 @@ impl<'a, B: Brush> BreakLines<'a, B> {
                         self.append_layout_inline_box(item.index, next_x);
 
                         // There is a soft wrap opportunity after an inline box, unless wrapping
-                        // is disabled
-                        if self.state.line.text_wrap_mode == TextWrapMode::Wrap {
+                        // is disabled. RINCH (rinch #2614): after a zero-height box that follows a
+                        // soft hyphen (an element's end edge) the line draws the hyphen, and must
+                        // fit with it, as at the opportunity after the soft hyphen itself.
+                        let fits_hyphen = self
+                            .state
+                            .line
+                            .soft_hyphen
+                            .is_none_or(|h| self.state.line.x + h <= max_advance);
+                        if self.state.line.text_wrap_mode == TextWrapMode::Wrap
+                            && (fits_hyphen || self.state.prev_boundary.is_none())
+                        {
                             self.state.mark_line_break_opportunity();
                         }
                     } else {
