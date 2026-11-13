@@ -78,6 +78,13 @@ pub struct Style<B: Brush> {
     pub locale: Option<fontique::Language>,
 }
 
+impl<B: Brush> Style<B> {
+    /// RINCH (rinch #2621): CSS `hyphens`.
+    pub fn hyphens(&self) -> crate::style::Hyphens {
+        self.hyphens
+    }
+}
+
 /// Underline or strikethrough decoration.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Decoration<B: Brush> {
