@@ -312,3 +312,33 @@ fn a_right_to_left_line_draws_its_hyphen_at_its_left() {
         layout.data.shaped_text.shaped_clusters()[k.cluster as usize].advance,
     );
 }
+
+#[test]
+fn clusters_and_the_breaker_report_the_hyphen() {
+    let text = "Extra\u{ad}ordinary";
+    let mut layout = build(text);
+    let (_, h) = hyphen(&layout);
+    let mut breaker = layout.break_lines();
+    breaker.state_mut().set_layout_max_advance(1.);
+    breaker.state_mut().set_line_max_advance(1.);
+    breaker.break_next().unwrap();
+    close(breaker.prior_line_hyphen(), h);
+    breaker.break_next().unwrap();
+    assert_eq!(breaker.prior_line_hyphen(), 0., "the last line draws none");
+    breaker.finish();
+    let shy = crate::Cluster::from_byte_index(&layout, 5).unwrap();
+    let info = shy.soft_hyphen().expect("a soft hyphen");
+    assert!(info.drawn);
+    close(info.advance, h);
+    close(shy.advance(), h);
+    assert_eq!(
+        crate::Cluster::from_byte_index(&layout, 0)
+            .unwrap()
+            .soft_hyphen(),
+        None
+    );
+    layout.break_all_lines(None);
+    let shy = crate::Cluster::from_byte_index(&layout, 5).unwrap();
+    assert!(!shy.soft_hyphen().unwrap().drawn);
+    assert_eq!(shy.advance(), 0.);
+}

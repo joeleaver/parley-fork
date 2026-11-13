@@ -37,6 +37,15 @@ impl<B: Brush> Clone for Cluster<'_, B> {
     }
 }
 
+/// RINCH (rinch #2614): a soft hyphen's hyphen, see [`Cluster::soft_hyphen`].
+#[derive(Copy, Clone, PartialEq, Debug)]
+pub struct SoftHyphenInfo {
+    /// The advance of the hyphen it draws at a line's end.
+    pub advance: f32,
+    /// Whether it draws the hyphen now: a line ends at it.
+    pub drawn: bool,
+}
+
 /// Defines the visual side of the cluster for hit testing.
 ///
 /// See [`Cluster::from_point`].
@@ -188,6 +197,25 @@ impl<'a, B: Brush> Cluster<'a, B> {
     pub fn advance(&self) -> f32 {
         let spacing = self.run.line_spacing();
         spacing.grapheme_advance(&self.atom, self.grapheme, self.is_rtl())
+    }
+
+    /// RINCH (rinch #2614): for a soft hyphen (U+00AD) that draws a hyphen when a line ends at it
+    /// (its text wraps and its `hyphens` is not `none`), the hyphen's advance and whether it draws
+    /// it now. `None` for any other cluster.
+    ///
+    /// While it draws the hyphen, the hyphen is this cluster's glyph and [`Self::advance`]
+    /// includes it.
+    pub fn soft_hyphen(&self) -> Option<SoftHyphenInfo> {
+        let data = &self.run.layout.data;
+        let index = data.soft_hyphen_at(self.atom.shaped_clusters_range().start)?;
+        let soft_hyphen = &data.soft_hyphens[index];
+        let style = &data.styles[usize::from(soft_hyphen.plain.style_index)];
+        (style.hyphens != crate::style::Hyphens::None
+            && style.text_wrap_mode == crate::TextWrapMode::Wrap)
+            .then_some(SoftHyphenInfo {
+                advance: soft_hyphen.hyphen.advance,
+                drawn: soft_hyphen.line.is_some(),
+            })
     }
 
     /// Returns `true` if this is a right-to-left cluster.

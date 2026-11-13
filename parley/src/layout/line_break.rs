@@ -1059,6 +1059,20 @@ impl<'a, B: Brush> BreakLines<'a, B> {
             .filter(|range| range.start <= range.end)
     }
 
+    /// RINCH (rinch #2614): the advance of the hyphen the last committed line draws at its end (a
+    /// soft hyphen it ends at), 0 when it draws none. It is part of the line's advance.
+    pub fn prior_line_hyphen(&self) -> f32 {
+        let Some(last) = self.lines.lines.len().checked_sub(1) else {
+            return 0.;
+        };
+        self.layout
+            .data
+            .soft_hyphens
+            .iter()
+            .find(|s| s.line == Some(last as u32))
+            .map_or(0., |s| s.hyphen.advance)
+    }
+
     /// Reverts the to an externally saved state.
     pub fn revert_to(&mut self, state: BreakerState) {
         self.state = state;

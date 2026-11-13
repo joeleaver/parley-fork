@@ -24,7 +24,7 @@ pub use parley_engine::{FontMetrics, Glyph};
 pub(crate) mod data;
 
 pub use alignment::{Alignment, AlignmentOptions};
-pub use cluster::{Affinity, Cluster, ClusterPath, ClusterSide};
+pub use cluster::{Affinity, Cluster, ClusterPath, ClusterSide, SoftHyphenInfo};
 pub use data::BreakReason;
 pub use layout::Layout;
 pub use line::{GlyphRun, Line, LineMetrics, PositionedInlineBox, PositionedLayoutItem};
