@@ -1,7 +1,7 @@
 // Copyright 2026 the Parley Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-use crate::{Brush, LayoutContext, WhiteSpaceCollapse};
+use crate::{Brush, Hyphens, LayoutContext, WhiteSpaceCollapse};
 
 use parley_engine::break_overrides::LineBreakOverrideFn;
 
@@ -25,6 +25,7 @@ pub(crate) fn analyze_text<B: Brush>(
     // space of a sequence spanning a style boundary.
     lcx.line_break.clear();
     lcx.break_spaces.clear();
+    lcx.no_hyphens.clear();
     for style_run in lcx.style_runs.iter() {
         let style = &lcx.style_table[style_run.style_index as usize];
         let line_break = LineBreakConfig {
@@ -40,6 +41,12 @@ pub(crate) fn analyze_text<B: Brush>(
                     range.end = style_run.range.end;
                 }
                 _ => lcx.line_break.push((style_run.range.clone(), line_break)),
+            }
+        }
+        if style.hyphens == Hyphens::None {
+            match lcx.no_hyphens.last_mut() {
+                Some(last) if last.end == style_run.range.start => last.end = style_run.range.end,
+                _ => lcx.no_hyphens.push(style_run.range.clone()),
             }
         }
         if style.white_space_collapse == WhiteSpaceCollapse::BreakSpaces {
@@ -60,6 +67,7 @@ pub(crate) fn analyze_text<B: Brush>(
         base_direction,
         line_break: &lcx.line_break,
         break_spaces: &lcx.break_spaces,
+        no_hyphens: &lcx.no_hyphens,
         line_break_override,
         inline_boxes: &lcx.inline_box_indices,
     };

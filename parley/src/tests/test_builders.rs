@@ -14,8 +14,8 @@ use super::utils::{
     fonts::{FONT_FAMILY_LIST, create_font_context},
 };
 use crate::{
-    BaseDirection, BreakReason, FontContext, FontFamily, FontFeatures, FontVariations, Layout,
-    LayoutContext, LineBreak, LineHeight, OverflowWrap, RangedBuilder, StyleProperty,
+    BaseDirection, BreakReason, FontContext, FontFamily, FontFeatures, FontVariations, Hyphens,
+    Layout, LayoutContext, LineBreak, LineHeight, OverflowWrap, RangedBuilder, StyleProperty,
     StyleRunBuilder, TextStyle, TextWrapMode, TreeBuilder, VerticalAlign, WhiteSpaceCollapse,
     WordBreak,
 };
@@ -236,6 +236,7 @@ fn create_root_style() -> TextStyle<'static, 'static, ColorBrush> {
         overflow_wrap: OverflowWrap::Anywhere,
         text_wrap_mode: TextWrapMode::Wrap,
         white_space_collapse: WhiteSpaceCollapse::PreserveBreaks,
+        hyphens: Hyphens::None,
     }
 }
 
@@ -274,6 +275,7 @@ fn set_root_style(rb: &mut RangedBuilder<'_, ColorBrush>) {
     rb.push_default(StyleProperty::WhiteSpaceCollapse(
         WhiteSpaceCollapse::PreserveBreaks,
     ));
+    rb.push_default(StyleProperty::Hyphens(Hyphens::None));
 }
 
 /// Test that all the builders have the same default behavior.

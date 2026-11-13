@@ -261,6 +261,57 @@ impl ShapedText {
         &self.normalized_coords
     }
 
+    /// RINCH (rinch #2614): the glyph of the hyphen drawn at a hyphenation break in run
+    /// `run_index`, and its advance at the run's size and variation coordinates.
+    ///
+    /// The hyphen is U+2010 HYPHEN when the run's font has it, else U+002D HYPHEN-MINUS, as
+    /// Blink's `ComputedStyle::HyphenString` picks it (from the primary font; here the run's).
+    /// `None` when the font has neither.
+    pub fn hyphen_glyph(&self, run_index: u32) -> Option<(u32, f32)> {
+        let run = self.runs.get(run_index as usize)?;
+        let font = &self.fonts.get(run.font_index)?.font;
+        let font_ref = skrifa::FontRef::from_index(font.data.as_ref(), font.index).ok()?;
+        let charmap = font_ref.charmap();
+        let glyph = charmap.map('\u{2010}').or_else(|| charmap.map('-'))?;
+        let coords: Vec<skrifa::raw::types::F2Dot14> = self
+            .normalized_coords
+            .get(run.normalized_coords_range.clone())
+            .unwrap_or(&[])
+            .iter()
+            .map(|c| skrifa::raw::types::F2Dot14::from_bits(c.to_bits()))
+            .collect();
+        let advance = font_ref
+            .glyph_metrics(
+                skrifa::prelude::Size::new(run.font_size),
+                skrifa::prelude::LocationRef::new(&coords),
+            )
+            .advance_width(glyph)?;
+        Some((glyph.to_u32(), advance))
+    }
+
+    /// RINCH (rinch #2614): replace shaped cluster `index` of run `run_index` with `cluster`,
+    /// which must cover the same characters, and update the run's advance.
+    ///
+    /// The line breaker draws a hyphen at a soft hyphen it ends a line at this way
+    /// ([`ShapedCluster::with_inline_glyph`]), and puts the soft hyphen back when the line is
+    /// broken again.
+    #[doc(hidden)]
+    pub fn set_shaped_cluster(&mut self, run_index: u32, index: u32, cluster: ShapedCluster) {
+        let Some(slot) = self.shaped_clusters.get_mut(index as usize) else {
+            return;
+        };
+        debug_assert_eq!(
+            slot.chars_range, cluster.chars_range,
+            "a replacement cluster covers the same characters"
+        );
+        *slot = cluster;
+        if let Some(run) = self.runs.get_mut(run_index as usize) {
+            let range =
+                run.shaped_clusters_range.start as usize..run.shaped_clusters_range.end as usize;
+            run.advance = self.shaped_clusters[range].iter().map(|c| c.advance).sum();
+        }
+    }
+
     #[expect(clippy::cast_possible_truncation, reason = "Deferred")]
     pub(crate) fn push_run(
         &mut self,

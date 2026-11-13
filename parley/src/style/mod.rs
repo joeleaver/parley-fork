@@ -43,6 +43,22 @@ pub enum WhiteSpaceCollapse {
     BreakSpaces,
 }
 
+/// CSS `hyphens`: whether a soft hyphen (U+00AD) is a hyphenation opportunity.
+///
+/// RINCH (rinch #2621): under [`Hyphens::None`] a soft hyphen gives no soft wrap opportunity
+/// after it, and draws nothing. [`Hyphens::Auto`] has no hyphenation dictionary and behaves as
+/// [`Hyphens::Manual`] (Chrome without a dictionary for the content language does too).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum Hyphens {
+    /// No hyphenation, not even at a soft hyphen.
+    None,
+    /// Hyphenation at soft hyphens only (the initial value).
+    #[default]
+    Manual,
+    /// Hyphenation at soft hyphens and where a dictionary allows (here, soft hyphens only).
+    Auto,
+}
+
 /// The height that this text takes up. The default is `MetricsRelative(1.0)`, which is the given
 /// font's preferred line height.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -277,6 +293,8 @@ pub enum StyleProperty<'a, B: Brush> {
     TextWrapMode(TextWrapMode),
     /// Whitespace collapsing and hanging behavior.
     WhiteSpaceCollapse(WhiteSpaceCollapse),
+    /// CSS `hyphens` (RINCH, rinch #2621).
+    Hyphens(Hyphens),
 }
 
 /// Unresolved styles.
@@ -334,6 +352,8 @@ pub struct TextStyle<'family, 'settings, B: Brush> {
     pub text_wrap_mode: TextWrapMode,
     /// Whitespace collapsing and hanging behavior.
     pub white_space_collapse: WhiteSpaceCollapse,
+    /// CSS `hyphens` (RINCH, rinch #2621).
+    pub hyphens: Hyphens,
 }
 
 impl<B: Brush> Default for TextStyle<'static, 'static, B> {
@@ -365,6 +385,7 @@ impl<B: Brush> Default for TextStyle<'static, 'static, B> {
             overflow_wrap: OverflowWrap::default(),
             text_wrap_mode: TextWrapMode::default(),
             white_space_collapse: WhiteSpaceCollapse::default(),
+            hyphens: Hyphens::default(),
         }
     }
 }
@@ -450,6 +471,12 @@ impl<B: Brush> From<LineBreak> for StyleProperty<'_, B> {
 impl<B: Brush> From<OverflowWrap> for StyleProperty<'_, B> {
     fn from(value: OverflowWrap) -> Self {
         StyleProperty::OverflowWrap(value)
+    }
+}
+
+impl<B: Brush> From<Hyphens> for StyleProperty<'_, B> {
+    fn from(value: Hyphens) -> Self {
+        StyleProperty::Hyphens(value)
     }
 }
 

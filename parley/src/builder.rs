@@ -409,6 +409,9 @@ fn build_into_layout<B: Brush>(
         );
     }
 
+    // RINCH (rinch #2614): the soft hyphens that draw a hyphen at a line's end.
+    layout.data.collect_soft_hyphens(text);
+
     // After shaping, so that the metrics of fonts used for shaping can be reused.
     crate::layout::style_metrics::resolve_style_metrics(
         &lcx.rcx,

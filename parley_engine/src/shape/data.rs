@@ -172,6 +172,21 @@ pub struct ShapedCluster {
 }
 
 impl ShapedCluster {
+    /// RINCH (rinch #2614): this cluster drawn as the single glyph `glyph_id`, `advance` wide and
+    /// with no offset (an inline glyph, [`Self::has_inline_glyph`]). Its characters, style and
+    /// break properties are kept.
+    ///
+    /// This is how a soft hyphen at the end of a line draws its hyphen: see
+    /// [`ShapedText::set_shaped_cluster`](crate::ShapedText::set_shaped_cluster).
+    #[must_use]
+    pub fn with_inline_glyph(mut self, glyph_id: u32, advance: f32) -> Self {
+        self.glyph_offset = glyph_id;
+        self.flags = ShapedClusterFlags(self.flags.0 & !ShapedClusterFlags::GLYPH_LEN_MASK)
+            .with_inline_glyph(true);
+        self.advance = advance;
+        self
+    }
+
     /// The characters of this cluster, as a range into [`ShapedText::characters`](crate::ShapedText::characters).
     ///
     /// This is also the range of character positions in the source text (in the Unicode scalar

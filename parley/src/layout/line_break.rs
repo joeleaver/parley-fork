@@ -22,7 +22,7 @@ use crate::layout::{
 };
 use crate::style::Brush;
 use crate::{
-    BaselineShift, InlineBox, InlineBoxKind, OverflowWrap, TextWrapMode, VerticalAlign,
+    BaselineShift, Hyphens, InlineBox, InlineBoxKind, OverflowWrap, TextWrapMode, VerticalAlign,
     WhiteSpaceCollapse,
 };
 
@@ -83,6 +83,10 @@ struct LineState {
     /// These are the line's justification opportunities, before subtracting those that end up in
     /// the line's hanging whitespace.
     num_word_separators: u32,
+
+    /// RINCH (rinch #2614): the advance of the hyphen the line would draw if it ended here, when
+    /// the last thing appended to it is a soft hyphen that can draw one.
+    soft_hyphen: Option<f32>,
 }
 
 impl LineState {
@@ -91,6 +95,7 @@ impl LineState {
         self.x = 0.0;
         self.box_metrics.reset();
         self.num_word_separators = 0;
+        self.soft_hyphen = None;
     }
 }
 
@@ -687,6 +692,9 @@ impl BreakerState {
         self.cluster_idx = atom.shaped_clusters_range().end;
         self.line.x = next_x;
         self.line.num_word_separators += u32::from(is_word_separator);
+        self.line.soft_hyphen = data
+            .soft_hyphen_at(atom.shaped_clusters_range().start)
+            .map(|i| data.soft_hyphens[i].hyphen.advance);
         self.line.box_metrics.add_text(
             self.item_idx,
             self.run_idx,
@@ -726,6 +734,7 @@ impl BreakerState {
         self.item_idx += 1;
         self.line.items.end += 1;
         self.line.x = next_x;
+        self.line.soft_hyphen = None;
         if inline_box.vertical_align.is_line_relative() {
             self.line.box_metrics.add_line_relative_inline_box(
                 inline_box.vertical_align,
@@ -857,6 +866,10 @@ impl<'a, B: Brush> BreakLines<'a, B> {
     pub(crate) fn new(layout: &'a mut Layout<B>) -> Self {
         layout.data.width = 0.;
         layout.data.height = 0.;
+        // RINCH (rinch #2614): no line ends at a soft hyphen yet.
+        for i in 0..layout.data.soft_hyphens.len() {
+            layout.data.set_soft_hyphen(i, None);
+        }
         let mut lines = LineLayout::default();
         lines.swap(&mut layout.data);
         lines.lines.clear();
@@ -938,6 +951,13 @@ impl<'a, B: Brush> BreakLines<'a, B> {
         max_advance: f32,
         line_indent: f32,
     ) -> Option<YieldData> {
+        // RINCH (rinch #2614): a line that ends at a soft hyphen draws a hyphen there, which is
+        // part of its advance (and so of its alignment).
+        if let Some(index) = self.line_end_soft_hyphen(reason) {
+            let line = self.lines.lines.len() as u32;
+            self.layout.data.set_soft_hyphen(index, Some(line));
+            self.state.line.x += self.layout.data.soft_hyphens[index].hyphen.advance;
+        }
         commit_line(
             self.layout,
             &mut self.lines,
@@ -1045,6 +1065,51 @@ impl<'a, B: Brush> BreakLines<'a, B> {
         self.lines.truncate(self.state.lines);
         self.lines.line_items.truncate(self.state.items);
         self.done = false;
+        // RINCH (rinch #2614): the soft hyphens of the lines dropped draw no hyphen.
+        let kept = self.lines.lines.len();
+        for i in 0..self.layout.data.soft_hyphens.len() {
+            if self.layout.data.soft_hyphens[i]
+                .line
+                .is_some_and(|line| line as usize >= kept)
+            {
+                self.layout.data.set_soft_hyphen(i, None);
+            }
+        }
+    }
+
+    /// RINCH (rinch #2614): the soft hyphen the line being committed ends at, for a line broken
+    /// by `reason`, when it draws a hyphen there: the last text or in-flow box on the line is a
+    /// soft hyphen whose text wraps and has `hyphens` other than `none`. The last line of the
+    /// paragraph and a line ended by a forced break draw none.
+    fn line_end_soft_hyphen(&self, reason: BreakReason) -> Option<usize> {
+        if !matches!(reason, BreakReason::Regular | BreakReason::Emergency)
+            || self.layout.data.soft_hyphens.is_empty()
+        {
+            return None;
+        }
+        let line = &self.state.line;
+        let items = &self.layout.data.items;
+        let last = items
+            .get(line.items.start..line.items.end.min(items.len()))?
+            .iter()
+            .rev()
+            .find(|item| {
+                item.kind == LayoutItemKind::TextRun
+                    || self.layout.data.inline_boxes[item.index].inline_box.kind
+                        == InlineBoxKind::InFlow
+            })?;
+        if last.kind != LayoutItemKind::TextRun || line.clusters.end <= line.clusters.start {
+            return None;
+        }
+        let cluster = line.clusters.end - 1;
+        let index = self.layout.data.soft_hyphen_at(cluster)?;
+        let soft_hyphen = &self.layout.data.soft_hyphens[index];
+        if soft_hyphen.run as usize != last.index {
+            return None;
+        }
+        let style = &self.layout.data.styles[usize::from(soft_hyphen.plain.style_index)];
+        (style.hyphens != Hyphens::None && style.text_wrap_mode == TextWrapMode::Wrap)
+            .then_some(index)
     }
 
     /// Reverts the last computed line, returning to the previous state.
@@ -1227,7 +1292,19 @@ impl<'a, B: Brush> BreakLines<'a, B> {
                         } else if is_soft_wrap_opportunity && text_wrap_mode == TextWrapMode::Wrap {
                             // We don't record boundaries when the advance is 0. As we do not want overflowing content to cause extra consecutive
                             // line breaks. We should accept the overflowing fragment in that scenario.
-                            if self.state.line.x != 0.0 {
+                            // RINCH (rinch #2614): a line that ends after a soft hyphen draws a
+                            // hyphen, and must fit with it (CSS Text 3 § 6.1): a break there that
+                            // does not is no better than the opportunity before it, if there is
+                            // one. With none, it is the first opportunity of an overflowing line
+                            // (Chrome 157: `Extra&shy;ordinary` in 40px is `Extra-`, 44.64px).
+                            let fits_hyphen = self
+                                .state
+                                .line
+                                .soft_hyphen
+                                .is_none_or(|h| self.state.line.x + h <= max_advance);
+                            if self.state.line.x != 0.0
+                                && (fits_hyphen || self.state.prev_boundary.is_none())
+                            {
                                 self.state.mark_line_break_opportunity();
                                 // break_opportunity = true;
                             }

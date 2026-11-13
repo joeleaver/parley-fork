@@ -86,6 +86,14 @@ pub struct AnalysisOptions<'a> {
     /// [uax-14-algorithm]: https://unicode.org/reports/tr14/#Algorithm
     pub break_spaces: &'a [Range<usize>],
 
+    /// RINCH (rinch #2621): ranges of the source text in which a soft hyphen (U+00AD) is not a
+    /// hyphenation opportunity (CSS `hyphens: none`): there is no soft wrap opportunity after a
+    /// soft hyphen in them, whatever [`Self::line_break_override`] says, except under
+    /// [`LineBreak::Anywhere`](parlance::LineBreak::Anywhere).
+    ///
+    /// Ranges must be sorted and non-overlapping. Empty ranges are ignored.
+    pub no_hyphens: &'a [Range<usize>],
+
     /// The callback which will be called as a first provider of line breaking decisions.
     ///
     /// See [`LineBreakOverrideFn`] for more details.
@@ -108,6 +116,7 @@ impl core::fmt::Debug for AnalysisOptions<'_> {
             .field("base_direction", &self.base_direction)
             .field("line_break", &self.line_break)
             .field("break_spaces", &self.break_spaces)
+            .field("no_hyphens", &self.no_hyphens)
             .field("inline_boxes", &self.inline_boxes)
             .finish_non_exhaustive()
     }

@@ -188,6 +188,24 @@ pub(crate) struct LayoutItem {
     pub(crate) bidi_level: BidiLevel,
 }
 
+/// RINCH (rinch #2614): a soft hyphen (U+00AD) that draws a hyphen when a line ends at it.
+///
+/// Its shaped cluster is swapped for [`Self::hyphen`] while it ends a line
+/// ([`BreakLines`](crate::layout::BreakLines) does it), and for [`Self::plain`] otherwise.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct SoftHyphen {
+    /// Its shaped cluster, an index into [`ShapedText::shaped_clusters`].
+    pub(crate) cluster: u32,
+    /// Its shaped run, an index into [`ShapedText::runs`].
+    pub(crate) run: u32,
+    /// The cluster as shaped: no advance, and no glyph or an empty one.
+    pub(crate) plain: parley_engine::shape::ShapedCluster,
+    /// The cluster drawing a hyphen ([`ShapedText::hyphen_glyph`]).
+    pub(crate) hyphen: parley_engine::shape::ShapedCluster,
+    /// The index of the line it ends and draws a hyphen at, if any.
+    pub(crate) line: Option<u32>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct LayoutData<B: Brush> {
     // General settings (directly from the "builder")
@@ -209,6 +227,8 @@ pub(crate) struct LayoutData<B: Brush> {
     pub(crate) shaped_text: ShapedText,
     pub(crate) runs: Vec<RunData>,
     pub(crate) items: Vec<LayoutItem>,
+    /// RINCH (rinch #2614): the soft hyphens that can draw a hyphen, by cluster.
+    pub(crate) soft_hyphens: Vec<SoftHyphen>,
 
     // Output of line breaking
     /// The lines in the
@@ -254,6 +274,7 @@ impl<B: Brush> Default for LayoutData<B> {
             shaped_text: ShapedText::new(),
             runs: Vec::new(),
             items: Vec::new(),
+            soft_hyphens: Vec::new(),
             lines: Vec::new(),
             line_items: Vec::new(),
             aligned_subtree_offsets: Vec::new(),
@@ -283,10 +304,78 @@ impl<B: Brush> LayoutData<B> {
         self.shaped_text.clear();
         self.runs.clear();
         self.items.clear();
+        self.soft_hyphens.clear();
         self.lines.clear();
         self.line_items.clear();
         self.aligned_subtree_offsets.clear();
         self.alignment = None;
+    }
+
+    /// RINCH (rinch #2614): find the soft hyphens of `text`, which this layout was shaped from,
+    /// that can draw a hyphen: each a cluster of its own, in a font with a hyphen.
+    pub(crate) fn collect_soft_hyphens(&mut self, text: &str) {
+        self.soft_hyphens.clear();
+        if !text.contains('\u{ad}') {
+            return;
+        }
+        let shaped = &self.shaped_text;
+        let characters = shaped.characters();
+        let clusters = shaped.shaped_clusters();
+        let runs = shaped.runs();
+        for (byte, _) in text.match_indices('\u{ad}') {
+            let Ok(ch) = characters.binary_search_by_key(&(byte as u32), |c| c.text_byte_start)
+            else {
+                continue;
+            };
+            let ch = ch as u32;
+            let run = runs.partition_point(|r| r.characters_range.end <= ch);
+            let Some(shaped_run) = runs.get(run).filter(|r| r.characters_range.contains(&ch))
+            else {
+                continue;
+            };
+            let range = shaped_run.shaped_clusters_range.clone();
+            let in_run = &clusters[range.start as usize..range.end as usize];
+            let i = in_run.partition_point(|c| c.chars_range().end <= ch);
+            let Some(plain) = in_run.get(i).filter(|c| c.chars_range() == (ch..ch + 1)) else {
+                continue;
+            };
+            let Some((glyph, advance)) = shaped.hyphen_glyph(run as u32) else {
+                continue;
+            };
+            self.soft_hyphens.push(SoftHyphen {
+                cluster: range.start + i as u32,
+                run: run as u32,
+                plain: *plain,
+                hyphen: plain.with_inline_glyph(glyph, advance),
+                line: None,
+            });
+        }
+    }
+
+    /// RINCH (rinch #2614): the soft hyphen whose shaped cluster is `cluster`, if it can draw a
+    /// hyphen.
+    #[inline]
+    pub(crate) fn soft_hyphen_at(&self, cluster: u32) -> Option<usize> {
+        if self.soft_hyphens.is_empty() {
+            return None;
+        }
+        self.soft_hyphens
+            .binary_search_by_key(&cluster, |s| s.cluster)
+            .ok()
+    }
+
+    /// RINCH (rinch #2614): draw (`Some(line)`) or stop drawing (`None`) soft hyphen `index`'s
+    /// hyphen.
+    pub(crate) fn set_soft_hyphen(&mut self, index: usize, line: Option<u32>) {
+        let s = &mut self.soft_hyphens[index];
+        if s.line.is_some() == line.is_some() {
+            s.line = line;
+            return;
+        }
+        s.line = line;
+        let cluster = if line.is_some() { s.hyphen } else { s.plain };
+        let (run, at) = (s.run, s.cluster);
+        self.shaped_text.set_shaped_cluster(run, at, cluster);
     }
 
     /// Push an inline box to the list of items
@@ -401,6 +490,29 @@ impl<B: Brush> LayoutData<B> {
     }
 }
 
+/// RINCH (rinch #2614): a run's soft hyphens, for [`ContentWidthsMeasurer`].
+#[derive(Clone, Copy)]
+struct SoftHyphens<'a> {
+    all: &'a [SoftHyphen],
+    /// The run's first shaped cluster.
+    first_cluster: u32,
+}
+
+impl<'a> SoftHyphens<'a> {
+    /// The soft hyphen at the run's `i`th shaped cluster, if any.
+    #[inline(always)]
+    fn at(&self, i: usize) -> Option<&'a SoftHyphen> {
+        if self.all.is_empty() {
+            return None;
+        }
+        let cluster = self.first_cluster + i as u32;
+        self.all
+            .binary_search_by_key(&cluster, |s| s.cluster)
+            .ok()
+            .map(|k| &self.all[k])
+    }
+}
+
 struct ContentWidthsMeasurer {
     min_width: f32,
     max_width: f32,
@@ -426,6 +538,10 @@ struct ContentWidthsMeasurer {
 
     text_wrap_mode: TextWrapMode,
 
+    /// RINCH (rinch #2614): the advance of the hyphen a soft wrap break here would draw, when the
+    /// last thing measured is a soft hyphen that draws one; else 0.
+    pending_hyphen: f32,
+
     /// Indents for lines following a soft/hard wrap.
     soft_indent: f32,
     hard_indent: f32,
@@ -443,6 +559,7 @@ impl ContentWidthsMeasurer {
             running_hanging_whitespace: 0.,
             hangs_conditionally: false,
             text_wrap_mode: TextWrapMode::Wrap,
+            pending_hyphen: 0.,
             soft_indent: indent_options.indent_following_soft_wrap_break(indent_amount),
             hard_indent: indent_options.indent_following_forced_line_break(indent_amount),
             line_has_content: false,
@@ -462,7 +579,7 @@ impl ContentWidthsMeasurer {
         }
         self.min_width = self
             .min_width
-            .max(self.running_min_width - self.running_hanging_whitespace);
+            .max(self.running_min_width - self.running_hanging_whitespace + self.pending_hyphen);
         self.running_min_width = self.soft_indent;
     }
 
@@ -482,6 +599,7 @@ impl ContentWidthsMeasurer {
         }
         self.max_width = self.max_width.max(self.running_max_width);
         self.running_hanging_whitespace = 0.0;
+        self.pending_hyphen = 0.0;
         self.line_has_content = false;
         self.running_min_width = self.hard_indent;
         self.running_max_width = self.hard_indent;
@@ -501,6 +619,10 @@ impl ContentWidthsMeasurer {
                     // to the paragraph's level, which puts it at that edge whatever its run's level.
                     let can_hang = true;
                     let is_rtl = item.bidi_level.is_rtl();
+                    let soft_hyphens = SoftHyphens {
+                        all: &layout_data.soft_hyphens,
+                        first_cluster: slice.shaped_clusters_range().start,
+                    };
 
                     if run_spacing.is_zero() {
                         self.measure_text_run::<B, false>(
@@ -509,6 +631,7 @@ impl ContentWidthsMeasurer {
                             run_spacing,
                             can_hang,
                             is_rtl,
+                            soft_hyphens,
                         );
                     } else {
                         self.measure_text_run::<B, true>(
@@ -517,6 +640,7 @@ impl ContentWidthsMeasurer {
                             run_spacing,
                             can_hang,
                             is_rtl,
+                            soft_hyphens,
                         );
                     }
                 }
@@ -580,6 +704,7 @@ impl ContentWidthsMeasurer {
         spacing: Spacing,
         can_hang: bool,
         is_rtl: bool,
+        soft_hyphens: SoftHyphens<'_>,
     ) {
         let clusters = slice.shaped_clusters();
         // The cluster index at which nothing has been placed on the current line yet, if any.
@@ -619,7 +744,16 @@ impl ContentWidthsMeasurer {
                 continue;
             }
 
-            let mut advance = cluster.advance;
+            // RINCH (rinch #2614): a soft hyphen measures as shaped, whether or not a line broken
+            // earlier ends at it, and a soft wrap break right after it draws its hyphen.
+            let soft_hyphen = soft_hyphens.at(i);
+            let mut advance = soft_hyphen.map_or(cluster.advance, |s| s.plain.advance);
+            self.pending_hyphen = soft_hyphen
+                .filter(|_| {
+                    style.hyphens != crate::style::Hyphens::None
+                        && style.text_wrap_mode == TextWrapMode::Wrap
+                })
+                .map_or(0., |s| s.hyphen.advance);
             if SPACED {
                 let owns_gap = if is_rtl {
                     is_atom_start
@@ -668,6 +802,7 @@ impl ContentWidthsMeasurer {
         }
         // Inline boxes don't hang.
         self.running_hanging_whitespace = 0.0;
+        self.pending_hyphen = 0.0;
         self.running_min_width += inline_box.width;
         self.running_max_width += inline_box.width;
         self.line_has_content = true;

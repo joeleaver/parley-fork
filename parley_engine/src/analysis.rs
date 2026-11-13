@@ -646,6 +646,10 @@ pub(crate) fn analyze_text(
     // a `break_spaces` range.
     let mut prev_is_break_space = false;
     let mut break_spaces_iter = options.break_spaces.iter().peekable();
+    // RINCH (rinch #2621): whether the preceding character is a soft hyphen in a `no_hyphens`
+    // range.
+    let mut prev_is_inert_soft_hyphen = false;
+    let mut no_hyphens_iter = options.no_hyphens.iter().peekable();
     let mut break_anywhere_iter = options
         .line_break
         .iter()
@@ -730,6 +734,18 @@ pub(crate) fn analyze_text(
             .is_some_and(|range| range.contains(&byte_pos))
             && matches!(ch, ' ' | '\t' | '\u{3000}');
 
+        while no_hyphens_iter
+            .peek()
+            .is_some_and(|range| range.end <= byte_pos)
+        {
+            _ = no_hyphens_iter.next();
+        }
+        let after_inert_soft_hyphen = prev_is_inert_soft_hyphen;
+        prev_is_inert_soft_hyphen = ch == '\u{ad}'
+            && no_hyphens_iter
+                .peek()
+                .is_some_and(|range| range.contains(&byte_pos));
+
         while break_anywhere_iter
             .peek()
             .is_some_and(|range| range.end <= byte_pos)
@@ -778,6 +794,11 @@ pub(crate) fn analyze_text(
                 if let Some(forced) = forced {
                     opportunity = forced;
                 }
+            }
+            // RINCH (rinch #2621): CSS `hyphens: none` takes away the opportunity after a soft
+            // hyphen, whatever the override says (`line-break: anywhere` keeps its own).
+            if after_inert_soft_hyphen && !is_break_anywhere {
+                opportunity = false;
             }
             opportunity
         };

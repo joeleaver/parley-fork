@@ -32,6 +32,8 @@ pub struct LayoutContext<B: Brush = [u8; 4]> {
     pub(crate) analysis: Analysis,
     pub(crate) line_break: Vec<(Range<usize>, LineBreakConfig)>,
     pub(crate) break_spaces: Vec<Range<usize>>,
+    /// RINCH (rinch #2621): the ranges whose style is `hyphens: none`.
+    pub(crate) no_hyphens: Vec<Range<usize>>,
     /// RINCH (rinch #2588): the inline boxes' byte indices, for the bidi analysis.
     pub(crate) inline_box_indices: Vec<usize>,
 
@@ -58,6 +60,7 @@ impl<B: Brush> LayoutContext<B> {
             analysis: Analysis::new(),
             line_break: Vec::new(),
             break_spaces: Vec::new(),
+            no_hyphens: Vec::new(),
             inline_box_indices: Vec::new(),
             ranged_style_builder: RangedStyleBuilder::default(),
             tree_style_builder: TreeStyleBuilder::default(),

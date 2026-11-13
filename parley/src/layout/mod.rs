@@ -68,6 +68,9 @@ pub struct Style<B: Brush> {
     pub(crate) text_wrap_mode: TextWrapMode,
     /// Per-cluster whitespace collapsing and hanging behavior.
     pub(crate) white_space_collapse: WhiteSpaceCollapse,
+    /// CSS `hyphens`: whether a line ending at a soft hyphen of this style draws a hyphen
+    /// (RINCH, rinch #2614).
+    pub(crate) hyphens: crate::style::Hyphens,
     /// The locale of the text, if any.
     ///
     /// This is useful for consumers exposing the text to assistive technologies,
