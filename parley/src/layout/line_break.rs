@@ -734,7 +734,12 @@ impl BreakerState {
         self.item_idx += 1;
         self.line.items.end += 1;
         self.line.x = next_x;
-        self.line.soft_hyphen = None;
+        // RINCH (rinch #2614): a zero-height box (an inline element's end padding, border or
+        // margin, which rinch hands over as one) does not end a soft hyphen's piece: the hyphen
+        // is drawn inside the element, before it.
+        if inline_box.height != 0.0 {
+            self.line.soft_hyphen = None;
+        }
         if inline_box.vertical_align.is_line_relative() {
             self.line.box_metrics.add_line_relative_inline_box(
                 inline_box.vertical_align,
@@ -1108,9 +1113,11 @@ impl<'a, B: Brush> BreakLines<'a, B> {
             .iter()
             .rev()
             .find(|item| {
-                item.kind == LayoutItemKind::TextRun
-                    || self.layout.data.inline_boxes[item.index].inline_box.kind
-                        == InlineBoxKind::InFlow
+                item.kind == LayoutItemKind::TextRun || {
+                    let b = &self.layout.data.inline_boxes[item.index].inline_box;
+                    // A zero-height in-flow box (an element's end edge) is looked past.
+                    b.kind == InlineBoxKind::InFlow && b.height != 0.0
+                }
             })?;
         if last.kind != LayoutItemKind::TextRun || line.clusters.end <= line.clusters.start {
             return None;

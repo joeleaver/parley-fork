@@ -342,3 +342,43 @@ fn clusters_and_the_breaker_report_the_hyphen() {
     assert!(!shy.soft_hyphen().unwrap().drawn);
     assert_eq!(shy.advance(), 0.);
 }
+
+#[test]
+fn a_zero_height_box_after_the_soft_hyphen_is_looked_past() {
+    // rinch #2614 review: an inline element's end border after the soft hyphen (rinch's edge box,
+    // in flow and 0 tall). Chrome 157 draws the hyphen inside the element, before the border, and
+    // fits the line with both.
+    let text = "Extra\u{ad}ordinary";
+    let build_edge = |height: f32| {
+        let mut fcx = create_font_context();
+        let mut lcx: LayoutContext<ColorBrush> = LayoutContext::new();
+        let root = root_style();
+        let mut builder = lcx.tree_builder(&mut fcx, 1., false, &root);
+        builder.push_text("Extra\u{ad}");
+        builder.push_inline_box(crate::InlineBox {
+            id: 0,
+            kind: crate::InlineBoxKind::InFlow,
+            index: "Extra\u{ad}".len(),
+            width: 3.,
+            height,
+            baseline: None,
+            vertical_align: crate::VerticalAlign::BASELINE,
+        });
+        builder.push_text("ordinary");
+        let (layout, _) = builder.build();
+        layout
+    };
+    let mut layout = build_edge(0.);
+    let (_, h) = hyphen(&layout);
+    let extra = width("Extra");
+    // Room for `Extra` and the border, not for the hyphen too: no break at the soft hyphen fits,
+    // and with no earlier opportunity the first is taken, hyphen and all.
+    layout.break_all_lines(Some(extra + 3. + h / 2.));
+    let first = layout.lines().next().unwrap();
+    assert_eq!(&text[first.text_range()], "Extra\u{ad}");
+    close(first.metrics().advance, extra + h + 3.);
+    // A box with a height (an atomic inline) after it ends the piece here: no hyphen.
+    let mut layout = build_edge(10.);
+    layout.break_all_lines(Some(extra + 3. + h / 2.));
+    close(layout.lines().next().unwrap().metrics().advance, extra + 3.);
+}
