@@ -10,12 +10,13 @@ use alloc::vec::Vec;
 use core_maths::CoreFloat;
 use parlance::BidiLevel;
 
+use crate::layout::Style;
 use crate::layout::data::{AlignedSubtreeOffset, run_box_metrics};
 use crate::layout::spacing::{EffectiveSpacing, Justification, is_word_separator};
 use crate::layout::style_metrics::{
     BoxMetrics, InlineBoxPlacement, StyleMetrics, inline_box_placement,
 };
-use crate::layout::whitespace::atom_hanging_advance;
+use crate::layout::whitespace::{atom_hanging_advance, whitespace_hangs};
 use crate::layout::{
     BreakReason, Layout, LayoutData, LayoutItem, LayoutItemKind, LineData, LineItemData,
     LineMetrics, Run,
@@ -85,8 +86,16 @@ struct LineState {
     num_word_separators: u32,
 
     /// RINCH (rinch #2614): the advance of the hyphen the line would draw if it ended here, when
-    /// the last thing appended to it is a soft hyphen that can draw one.
+    /// the last thing appended to it is a soft hyphen that can draw one, or (rinch #2654) such a
+    /// soft hyphen and then white space of its style that hangs.
     soft_hyphen: Option<f32>,
+
+    /// RINCH (rinch #2654): the advance of the hanging white space appended after
+    /// [`Self::soft_hyphen`], which the line does not have to fit.
+    soft_hyphen_hang: f32,
+
+    /// RINCH (rinch #2654): the style of [`Self::soft_hyphen`]'s soft hyphen.
+    soft_hyphen_style: u16,
 }
 
 impl LineState {
@@ -96,7 +105,26 @@ impl LineState {
         self.box_metrics.reset();
         self.num_word_separators = 0;
         self.soft_hyphen = None;
+        self.soft_hyphen_hang = 0.0;
     }
+
+    /// RINCH (rinch #2614): whether the line, ended here, fits `max_advance` with the hyphen it
+    /// would draw; the white space that hangs after the soft hyphen is not fitted (rinch #2654:
+    /// Chrome 157 keeps `123 Extra&shy; ordinary`'s `123 Extra- ` on one line in 76px, 75.3px
+    /// less its space, and moves `Extra` down in 75px).
+    fn fits_soft_hyphen(&self, max_advance: f32) -> bool {
+        self.soft_hyphen
+            .is_none_or(|h| self.x - self.soft_hyphen_hang + h <= max_advance)
+    }
+}
+
+/// RINCH (rinch #2654): whether white space `whitespace` of `style` after a soft hyphen of the
+/// same style keeps the soft hyphen at the line's end: a space or tab that hangs. Chrome 157 draws
+/// the hyphen of `Extra&shy; ordinary` broken after the space (`Extra- ` / `ordinary`), and of
+/// `Extra&shy;\tordinary` under `pre-wrap`; not of `Extra&shy;<b> </b>ordinary`, whose space is
+/// another element's.
+fn hangs_after_soft_hyphen<B: Brush>(whitespace: Whitespace, style: &Style<B>) -> bool {
+    whitespace != Whitespace::Newline && whitespace_hangs(whitespace, style)
 }
 
 /// The metrics of a line box.
@@ -690,11 +718,24 @@ impl BreakerState {
         self.line.items.end = self.item_idx + 1;
         self.line.clusters.end = atom.shaped_clusters_range().end;
         self.cluster_idx = atom.shaped_clusters_range().end;
-        self.line.x = next_x;
+        let x = core::mem::replace(&mut self.line.x, next_x);
         self.line.num_word_separators += u32::from(is_word_separator);
-        self.line.soft_hyphen = data
-            .soft_hyphen_at(atom.shaped_clusters_range().start)
-            .map(|i| data.soft_hyphens[i].hyphen.advance);
+        if let Some(i) = data.soft_hyphen_at(atom.shaped_clusters_range().start) {
+            self.line.soft_hyphen = Some(data.soft_hyphens[i].hyphen.advance);
+            self.line.soft_hyphen_hang = 0.0;
+            self.line.soft_hyphen_style = style_index;
+        } else if self.line.soft_hyphen.is_some()
+            && style_index == self.line.soft_hyphen_style
+            && atom.characters().iter().all(|c| {
+                c.style_index == style_index
+                    && hangs_after_soft_hyphen(c.whitespace, &data.styles[usize::from(style_index)])
+            })
+        {
+            // RINCH (rinch #2654): white space after a soft hyphen keeps it at the line's end.
+            self.line.soft_hyphen_hang += next_x - x;
+        } else {
+            self.line.soft_hyphen = None;
+        }
         self.line.box_metrics.add_text(
             self.item_idx,
             self.run_idx,
@@ -1122,13 +1163,34 @@ impl<'a, B: Brush> BreakLines<'a, B> {
         if last.kind != LayoutItemKind::TextRun || line.clusters.end <= line.clusters.start {
             return None;
         }
-        let cluster = line.clusters.end - 1;
-        let index = self.layout.data.soft_hyphen_at(cluster)?;
-        let soft_hyphen = &self.layout.data.soft_hyphens[index];
+        // RINCH (rinch #2654): a line broken at the white space right after a soft hyphen ends at
+        // the soft hyphen too, when that white space hangs and is of the soft hyphen's style.
+        let data = &self.layout.data;
+        let clusters = data.shaped_text.shaped_clusters();
+        let mut cluster = line.clusters.end - 1;
+        while cluster > line.clusters.start
+            && data.soft_hyphen_at(cluster).is_none()
+            && clusters.get(cluster as usize).is_some_and(|c| {
+                hangs_after_soft_hyphen(c.whitespace(), &data.styles[usize::from(c.style_index)])
+            })
+        {
+            cluster -= 1;
+        }
+        let index = data.soft_hyphen_at(cluster)?;
+        let soft_hyphen = &data.soft_hyphens[index];
         if soft_hyphen.run as usize != last.index {
             return None;
         }
-        let style = &self.layout.data.styles[usize::from(soft_hyphen.plain.style_index)];
+        let shy_style = soft_hyphen.plain.style_index;
+        let style = &data.styles[usize::from(shy_style)];
+        let spaces = &clusters[cluster as usize + 1..line.clusters.end as usize];
+        if !spaces.is_empty() {
+            // The break is the white space's, which `hyphens: none` does not take away, and
+            // Chrome 157 draws the hyphen there under `hyphens: none` too.
+            return (style.text_wrap_mode == TextWrapMode::Wrap
+                && spaces.iter().all(|c| c.style_index == shy_style))
+            .then_some(index);
+        }
         (style.hyphens != Hyphens::None && style.text_wrap_mode == TextWrapMode::Wrap)
             .then_some(index)
     }
@@ -1251,11 +1313,7 @@ impl<'a, B: Brush> BreakLines<'a, B> {
                         // is disabled. RINCH (rinch #2614): after a zero-height box that follows a
                         // soft hyphen (an element's end edge) the line draws the hyphen, and must
                         // fit with it, as at the opportunity after the soft hyphen itself.
-                        let fits_hyphen = self
-                            .state
-                            .line
-                            .soft_hyphen
-                            .is_none_or(|h| self.state.line.x + h <= max_advance);
+                        let fits_hyphen = self.state.line.fits_soft_hyphen(max_advance);
                         if self.state.line.text_wrap_mode == TextWrapMode::Wrap
                             && (fits_hyphen || self.state.prev_boundary.is_none())
                         {
@@ -1327,11 +1385,7 @@ impl<'a, B: Brush> BreakLines<'a, B> {
                             // does not is no better than the opportunity before it, if there is
                             // one. With none, it is the first opportunity of an overflowing line
                             // (Chrome 157: `Extra&shy;ordinary` in 40px is `Extra-`, 44.64px).
-                            let fits_hyphen = self
-                                .state
-                                .line
-                                .soft_hyphen
-                                .is_none_or(|h| self.state.line.x + h <= max_advance);
+                            let fits_hyphen = self.state.line.fits_soft_hyphen(max_advance);
                             if self.state.line.x != 0.0
                                 && (fits_hyphen || self.state.prev_boundary.is_none())
                             {

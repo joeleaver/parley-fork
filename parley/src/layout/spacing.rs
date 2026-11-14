@@ -96,12 +96,19 @@ impl Spacing {
         self.word == 0. && self.letter == 0.
     }
 
-    /// The gaps around an atom whose first character has the given whitespace class.
+    /// The gaps around an atom whose first character has the given whitespace class, and is a
+    /// soft hyphen when `soft_hyphen`.
     ///
     /// This is [`EffectiveSpacing::gaps`] under [`Justification::NONE`].
+    ///
+    /// RINCH (rinch #2654): a soft hyphen takes no spacing, drawn as a hyphen or not, as in Blink
+    /// (`ShapeResultSpacing::ComputeSpacing` adds no letter spacing to a character it treats as
+    /// a zero-width space, and draws the hyphen unspaced): with `letter-spacing: 2px` Chrome 157's
+    /// `Extra-` is 54.64px, the hyphen 5.73 of it, and `Extra&shy;ordinary` on one line is as wide
+    /// as `Extraordinary`.
     #[inline(always)]
-    pub(crate) fn gaps(self, whitespace: Whitespace) -> Gaps {
-        if whitespace == Whitespace::Newline {
+    pub(crate) fn gaps(self, whitespace: Whitespace, soft_hyphen: bool) -> Gaps {
+        if whitespace == Whitespace::Newline || soft_hyphen {
             return Gaps::ZERO;
         }
 
@@ -172,8 +179,9 @@ impl EffectiveSpacing {
     /// The gaps around `atom`.
     #[inline(always)]
     pub(crate) fn gaps(self, atom: &Atom<'_>) -> Gaps {
-        let whitespace = atom.characters()[0].whitespace;
-        let mut gaps = self.spacing.gaps(whitespace);
+        let first = &atom.characters()[0];
+        let whitespace = first.whitespace;
+        let mut gaps = self.spacing.gaps(whitespace, first.flags.is_soft_hyphen());
 
         if is_word_separator(whitespace)
             && atom.shaped_clusters_range().end <= self.justification.justification_end_cluster
