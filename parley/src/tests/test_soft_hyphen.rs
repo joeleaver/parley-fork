@@ -444,7 +444,7 @@ fn letter_spacing_skips_the_soft_hyphen() {
     broken.break_all_lines(Some(1.));
     let piece = broken.lines().next().unwrap().metrics().advance;
     assert!((piece - (whole.width() + h)).abs() < 0.5, "{piece}");
-    let mut layout = spaced(text, ls);
+    let layout = spaced(text, ls);
     close(layout.calculate_content_widths().min, piece);
 }
 
@@ -488,7 +488,7 @@ fn the_line_is_fitted_with_the_hyphen_before_its_spaces() {
     layout.break_all_lines(Some(piece + h + 0.5));
     assert_eq!(lines(&layout, text)[0].0, "123 Extra\u{ad} ");
     // The min-content piece that ends at the space counts the hyphen.
-    let mut layout = build("Extraordinary\u{ad} ab");
+    let layout = build("Extraordinary\u{ad} ab");
     close(
         layout.calculate_content_widths().min,
         width("Extraordinary") + h,
