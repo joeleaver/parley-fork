@@ -542,6 +542,11 @@ struct ContentWidthsMeasurer {
     /// last thing measured is a soft hyphen that draws one; else 0.
     pending_hyphen: f32,
 
+    /// RINCH (rinch #2654): the advance of the hyphen a soft wrap break after white space that
+    /// hangs right after the last soft hyphen measured would draw, and that soft hyphen's style:
+    /// the white space keeps it at the line's end when it is of that style.
+    space_hyphen: (f32, u16),
+
     /// Indents for lines following a soft/hard wrap.
     soft_indent: f32,
     hard_indent: f32,
@@ -560,6 +565,7 @@ impl ContentWidthsMeasurer {
             hangs_conditionally: false,
             text_wrap_mode: TextWrapMode::Wrap,
             pending_hyphen: 0.,
+            space_hyphen: (0., 0),
             soft_indent: indent_options.indent_following_soft_wrap_break(indent_amount),
             hard_indent: indent_options.indent_following_forced_line_break(indent_amount),
             line_has_content: false,
@@ -600,6 +606,7 @@ impl ContentWidthsMeasurer {
         self.max_width = self.max_width.max(self.running_max_width);
         self.running_hanging_whitespace = 0.0;
         self.pending_hyphen = 0.0;
+        self.space_hyphen.0 = 0.0;
         self.line_has_content = false;
         self.running_min_width = self.hard_indent;
         self.running_max_width = self.hard_indent;
@@ -736,7 +743,7 @@ impl ContentWidthsMeasurer {
                     continue;
                 }
                 if SPACED {
-                    gap = spacing.gaps(whitespace).after;
+                    gap = spacing.gaps(whitespace, cluster.is_soft_hyphen()).after;
                 }
             } else if skip_atom {
                 // The next line starts after the whole newline atom.
@@ -748,12 +755,31 @@ impl ContentWidthsMeasurer {
             // earlier ends at it, and a soft wrap break right after it draws its hyphen.
             let soft_hyphen = soft_hyphens.at(i);
             let mut advance = soft_hyphen.map_or(cluster.advance, |s| s.plain.advance);
-            self.pending_hyphen = soft_hyphen
-                .filter(|_| {
-                    style.hyphens != crate::style::Hyphens::None
-                        && style.text_wrap_mode == TextWrapMode::Wrap
-                })
-                .map_or(0., |s| s.hyphen.advance);
+            if let Some(s) = soft_hyphen {
+                let wraps = style.text_wrap_mode == TextWrapMode::Wrap;
+                self.pending_hyphen = if wraps && style.hyphens != crate::style::Hyphens::None {
+                    s.hyphen.advance
+                } else {
+                    0.
+                };
+                // RINCH (rinch #2654): after white space, `hyphens: none` does not matter
+                // (Chrome 157 draws the hyphen of `Extra&shy; ordinary` under it).
+                self.space_hyphen = (
+                    if wraps { s.hyphen.advance } else { 0. },
+                    cluster.style_index,
+                );
+            } else if self.space_hyphen.0 > 0.
+                && cluster.style_index == self.space_hyphen.1
+                && whitespace != Whitespace::Newline
+                && whitespace_hangs(whitespace, style)
+            {
+                // RINCH (rinch #2654): a break after white space right after a soft hyphen
+                // draws its hyphen (Chrome 157: `Extraordinary&shy; x` is 107.38 at min-content).
+                self.pending_hyphen = self.space_hyphen.0;
+            } else {
+                self.pending_hyphen = 0.;
+                self.space_hyphen.0 = 0.;
+            }
             if SPACED {
                 let owns_gap = if is_rtl {
                     is_atom_start
@@ -803,6 +829,7 @@ impl ContentWidthsMeasurer {
         // Inline boxes don't hang.
         self.running_hanging_whitespace = 0.0;
         self.pending_hyphen = 0.0;
+        self.space_hyphen.0 = 0.0;
         self.running_min_width += inline_box.width;
         self.running_max_width += inline_box.width;
         self.line_has_content = true;

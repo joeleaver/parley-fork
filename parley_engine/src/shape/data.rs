@@ -51,6 +51,8 @@ impl ShapedClusterFlags {
     /// [`Whitespace`] class of the cluster's first character (3 bits).
     const WHITESPACE_SHIFT: u16 = 12;
     const WHITESPACE_MASK: u16 = 0b111 << Self::WHITESPACE_SHIFT;
+    /// RINCH (rinch #2654): the cluster's first character is a soft hyphen (U+00AD).
+    const SOFT_HYPHEN: u16 = 1 << 15;
 
     #[inline(always)]
     pub(crate) const fn new(glyph_len: u8) -> Self {
@@ -81,15 +83,22 @@ impl ShapedClusterFlags {
         mut self,
         soft_wrap_opportunity: bool,
         whitespace: Whitespace,
+        soft_hyphen: bool,
     ) -> Self {
-        self.0 = self.0 & !(Self::SOFT_WRAP_BEFORE | Self::WHITESPACE_MASK)
+        self.0 = self.0 & !(Self::SOFT_WRAP_BEFORE | Self::WHITESPACE_MASK | Self::SOFT_HYPHEN)
             | if soft_wrap_opportunity {
                 Self::SOFT_WRAP_BEFORE
             } else {
                 0
             }
-            | ((whitespace as u16) << Self::WHITESPACE_SHIFT);
+            | ((whitespace as u16) << Self::WHITESPACE_SHIFT)
+            | if soft_hyphen { Self::SOFT_HYPHEN } else { 0 };
         self
+    }
+
+    #[inline(always)]
+    const fn is_soft_hyphen(self) -> bool {
+        self.0 & Self::SOFT_HYPHEN != 0
     }
 
     #[inline(always)]
@@ -248,6 +257,14 @@ impl ShapedCluster {
         self.flags.whitespace()
     }
 
+    /// RINCH (rinch #2654): whether this cluster's first character is a soft hyphen (U+00AD).
+    ///
+    /// See [`Self::is_soft_wrap_opportunity_before`].
+    #[inline(always)]
+    pub fn is_soft_hyphen(self) -> bool {
+        self.flags.is_soft_hyphen()
+    }
+
     /// The number of characters in this cluster.
     #[inline(always)]
     pub fn char_len(self) -> u32 {
@@ -281,6 +298,8 @@ impl CharacterFlags {
     const WORD_BOUNDARY: u8 = 1 << 3;
     /// Whether there is a soft wrap opportunity before the character.
     const SOFT_WRAP_OPPORTUNITY: u8 = 1 << 4;
+    /// RINCH (rinch #2654): whether the source character is a soft hyphen (U+00AD).
+    const SOFT_HYPHEN: u8 = 1 << 5;
 
     #[inline(always)]
     pub fn new(source_char: char, is_word_boundary: bool, is_soft_wrap_opportunity: bool) -> Self {
@@ -303,8 +322,19 @@ impl CharacterFlags {
                     Self::SOFT_WRAP_OPPORTUNITY
                 } else {
                     0
+                }
+                | if source_char == '\u{ad}' {
+                    Self::SOFT_HYPHEN
+                } else {
+                    0
                 },
         )
+    }
+
+    /// RINCH (rinch #2654): whether the source character is a soft hyphen (U+00AD).
+    #[inline(always)]
+    pub fn is_soft_hyphen(self) -> bool {
+        self.0 & Self::SOFT_HYPHEN != 0
     }
 
     /// Whether there is a soft wrap opportunity before this character ([UAX #14][line-breaking]).
@@ -354,6 +384,7 @@ mod tests {
             ('\u{2028}', 3, false),
             ('\u{2600}', 3, true),
             ('\u{1F600}', 4, true),
+            ('\u{ad}', 2, false),
         ] {
             for (is_word_boundary, is_soft_wrap_opportunity) in
                 [(false, false), (true, false), (false, true), (true, true)]
@@ -361,6 +392,7 @@ mod tests {
                 let flags = CharacterFlags::new(ch, is_word_boundary, is_soft_wrap_opportunity);
                 assert_eq!(flags.len_utf8(), len, "{ch:?}");
                 assert_eq!(flags.is_emoji(), emoji, "{ch:?}");
+                assert_eq!(flags.is_soft_hyphen(), ch == '\u{ad}', "{ch:?}");
                 assert_eq!(flags.is_word_boundary(), is_word_boundary, "{ch:?}");
                 assert_eq!(
                     flags.is_soft_wrap_opportunity(),
@@ -394,12 +426,16 @@ mod tests {
             Whitespace::ControlWhitespace,
         ];
         for soft_wrap in soft_wraps {
-            for whitespace in whitespaces {
+            for (whitespace, soft_hyphen) in whitespaces
+                .into_iter()
+                .zip([false, true].into_iter().cycle())
+            {
                 let flags = ShapedClusterFlags::new(3)
                     .with_grapheme_start(true)
-                    .with_first_char(soft_wrap, whitespace);
+                    .with_first_char(soft_wrap, whitespace, soft_hyphen);
                 assert_eq!(flags.is_soft_wrap_opportunity_before(), soft_wrap);
                 assert_eq!(flags.whitespace(), whitespace);
+                assert_eq!(flags.is_soft_hyphen(), soft_hyphen);
                 assert_eq!(flags.glyph_len(), 3);
                 assert!(flags.is_grapheme_start());
             }
