@@ -1078,6 +1078,17 @@ impl<'a, B: Brush> BreakLines<'a, B> {
             .map_or(0., |s| s.hyphen.advance)
     }
 
+    /// RINCH (rinch #2628): the `text-indent` ([`Layout::set_text_indent`]) the next line is
+    /// broken with: the first line's, a line's after a forced break, or a line's after a soft
+    /// wrap, as the last committed line ended. A caller that judges a line against its room
+    /// itself (a line it commits by length, an inline box it places beside the line's content)
+    /// takes it off the room, as [`Self::break_next`] does.
+    ///
+    /// [`Layout::set_text_indent`]: crate::Layout::set_text_indent
+    pub fn line_indent(&self) -> f32 {
+        self.resolve_indent()
+    }
+
     /// Reverts the to an externally saved state.
     pub fn revert_to(&mut self, state: BreakerState) {
         self.state = state;
