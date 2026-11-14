@@ -403,3 +403,114 @@ fn a_zero_height_box_after_the_soft_hyphen_is_looked_past() {
     layout.break_all_lines(Some(extra + 3. + h / 2.));
     close(layout.lines().next().unwrap().metrics().advance, extra + 3.);
 }
+
+/// `text` built with `letter_spacing`.
+fn spaced(text: &str, letter_spacing: f32) -> Layout<ColorBrush> {
+    build_with(
+        text,
+        TextStyle {
+            letter_spacing,
+            ..root_style()
+        },
+        BaseDirection::Auto,
+    )
+}
+
+#[test]
+fn letter_spacing_skips_the_soft_hyphen() {
+    // RINCH (rinch #2654), Chrome 157: no letter spacing on a soft hyphen, drawn or not.
+    let text = "Extra\u{ad}ordinary";
+    let ls = 2.;
+    let mut whole = spaced("Extraordinary", ls);
+    whole.break_all_lines(None);
+    let mut layout = spaced(text, ls);
+    layout.break_all_lines(None);
+    close(layout.width(), whole.width());
+    let widths = layout.calculate_content_widths();
+    close(widths.max, whole.width());
+    // Broken at the soft hyphen: each letter of `Extra` spaced, the hyphen not.
+    let (_, h) = hyphen(&layout);
+    let mut extra = spaced("Extra", ls);
+    extra.break_all_lines(None);
+    layout.break_all_lines(Some(1.));
+    let got = lines(&layout, text);
+    assert_eq!(got[0].0, "Extra\u{ad}");
+    close(got[0].1, extra.width() + h);
+    // The min-content piece that ends at it, likewise: as the line breaker lays it out, and
+    // within a kern of the spaced word and the unspaced hyphen (a kern across the soft hyphen
+    // stays, rinch #2614's known difference).
+    let text = "Extraordinary\u{ad}ab";
+    let mut broken = spaced(text, ls);
+    broken.break_all_lines(Some(1.));
+    let piece = broken.lines().next().unwrap().metrics().advance;
+    assert!((piece - (whole.width() + h)).abs() < 0.5, "{piece}");
+    let layout = spaced(text, ls);
+    close(layout.calculate_content_widths().min, piece);
+}
+
+#[test]
+fn a_soft_hyphen_before_the_spaces_a_line_breaks_at_draws_its_hyphen() {
+    // RINCH (rinch #2654), Chrome 157: `Extra&shy; ordinary` broken after the space is
+    // `Extra- ` / `ordinary`, overflowing or not, and under `hyphens: none` too.
+    let text = "Extra\u{ad} ordinary";
+    let space = width("a b") - width("ab");
+    for none in [false, true] {
+        let root = TextStyle {
+            hyphens: if none { Hyphens::None } else { Hyphens::Manual },
+            ..root_style()
+        };
+        let mut layout = build_with(text, root, BaseDirection::Auto);
+        let (glyph, h) = hyphen(&layout);
+        for max in [width("Extra") + h + space + 10., 1.] {
+            layout.break_all_lines(Some(max));
+            let got = lines(&layout, text);
+            assert_eq!(got[0].0, "Extra\u{ad} ", "{max}px, hyphens: none {none}");
+            close(got[0].1, width("Extra") + h + space);
+            assert!(glyphs(&layout)[0].contains(&glyph), "the hyphen is drawn");
+        }
+        // On one line, none.
+        layout.break_all_lines(None);
+        assert!(!glyphs(&layout)[0].contains(&glyph));
+    }
+}
+
+#[test]
+fn the_line_is_fitted_with_the_hyphen_before_its_spaces() {
+    // RINCH (rinch #2654), Chrome 157: `123 Extra&shy; ordinary` keeps `123 Extra- ` on one line
+    // only when `123 Extra-` fits, the space hanging.
+    let text = "123 Extra\u{ad} ordinary";
+    let layout = build(text);
+    let (_, h) = hyphen(&layout);
+    let piece = width("123 Extra");
+    let mut layout = build(text);
+    layout.break_all_lines(Some(piece + h / 2.));
+    assert_eq!(lines(&layout, text)[0].0, "123 ");
+    layout.break_all_lines(Some(piece + h + 0.5));
+    assert_eq!(lines(&layout, text)[0].0, "123 Extra\u{ad} ");
+    // The min-content piece that ends at the space counts the hyphen.
+    let layout = build("Extraordinary\u{ad} ab");
+    close(
+        layout.calculate_content_widths().min,
+        width("Extraordinary") + h,
+    );
+}
+
+#[test]
+fn a_space_of_another_style_keeps_no_hyphen() {
+    // Chrome 157: `Extra&shy;<b> </b>ordinary` draws no hyphen.
+    let mut fcx = create_font_context();
+    let mut lcx: LayoutContext<ColorBrush> = LayoutContext::new();
+    let root = root_style();
+    let mut builder = lcx.tree_builder(&mut fcx, 1., false, &root);
+    builder.push_text("Extra\u{ad}");
+    builder.push_style_modification_span(&[StyleProperty::LetterSpacing(0.5)]);
+    builder.push_text(" ");
+    builder.pop_style_span();
+    builder.push_text("ordinary");
+    let (mut layout, text) = builder.build();
+    let (glyph, _) = hyphen(&layout);
+    layout.break_all_lines(Some(60.));
+    assert_eq!(lines(&layout, &text)[0].0, "Extra\u{ad} ");
+    assert!(!glyphs(&layout)[0].contains(&glyph));
+    close(layout.calculate_content_widths().min, width("ordinary"));
+}

@@ -548,6 +548,7 @@ fn process_shaped_clusters<'a>(
                 .with_first_char(
                     first_character.flags.is_soft_wrap_opportunity(),
                     first_character.whitespace,
+                    first_character.flags.is_soft_hyphen(),
                 ),
             glyph_offset,
             advance,

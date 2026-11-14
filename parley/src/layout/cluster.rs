@@ -199,9 +199,13 @@ impl<'a, B: Brush> Cluster<'a, B> {
         spacing.grapheme_advance(&self.atom, self.grapheme, self.is_rtl())
     }
 
-    /// RINCH (rinch #2614): for a soft hyphen (U+00AD) that draws a hyphen when a line ends at it
-    /// (its text wraps and its `hyphens` is not `none`), the hyphen's advance and whether it draws
-    /// it now. `None` for any other cluster.
+    /// RINCH (rinch #2614): for a soft hyphen (U+00AD) that can draw a hyphen when a line ends at
+    /// it (its text wraps), the hyphen's advance and whether it draws it now. `None` for any other
+    /// cluster.
+    ///
+    /// Under `hyphens: none` there is no break right after the soft hyphen, but a line broken at
+    /// the white space after it still draws the hyphen (rinch #2654, as Chrome 157 does): the
+    /// caller asks [`Style::hyphens`](crate::layout::Style::hyphens) which it is.
     ///
     /// While it draws the hyphen, the hyphen is this cluster's glyph and [`Self::advance`]
     /// includes it.
@@ -210,12 +214,10 @@ impl<'a, B: Brush> Cluster<'a, B> {
         let index = data.soft_hyphen_at(self.atom.shaped_clusters_range().start)?;
         let soft_hyphen = &data.soft_hyphens[index];
         let style = &data.styles[usize::from(soft_hyphen.plain.style_index)];
-        (style.hyphens != crate::style::Hyphens::None
-            && style.text_wrap_mode == crate::TextWrapMode::Wrap)
-            .then_some(SoftHyphenInfo {
-                advance: soft_hyphen.hyphen.advance,
-                drawn: soft_hyphen.line.is_some(),
-            })
+        (style.text_wrap_mode == crate::TextWrapMode::Wrap).then_some(SoftHyphenInfo {
+            advance: soft_hyphen.hyphen.advance,
+            drawn: soft_hyphen.line.is_some(),
+        })
     }
 
     /// Returns `true` if this is a right-to-left cluster.
