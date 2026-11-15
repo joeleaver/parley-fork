@@ -189,6 +189,14 @@ impl EffectiveSpacing {
             gaps.after += self.justification.amount_per_opportunity;
         }
 
+        // RINCH (rinch #2381): an atom that draws no glyph has no gap: glyph runs put an atom's
+        // gaps on its glyphs, and leave one with none out (`GlyphRunIter`), so a gap there would
+        // widen the line past what is drawn. A ligature's piece after the first draws none while
+        // the ligature is joined.
+        if gaps.total() != 0. && atom.shaped_clusters().iter().all(|c| c.glyph_len() == 0) {
+            return Gaps::ZERO;
+        }
+
         gaps
     }
 

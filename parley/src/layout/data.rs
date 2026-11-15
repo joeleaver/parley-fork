@@ -229,6 +229,10 @@ pub(crate) struct LayoutData<B: Brush> {
     pub(crate) items: Vec<LayoutItem>,
     /// RINCH (rinch #2614): the soft hyphens that can draw a hyphen, by cluster.
     pub(crate) soft_hyphens: Vec<SoftHyphen>,
+    /// RINCH (rinch #2381): for each of the shaped text's ligature splits
+    /// ([`ShapedText::ligature_splits`]), the index of the line that ends inside it and breaks
+    /// it, if any.
+    pub(crate) ligature_lines: Vec<Option<u32>>,
 
     // Output of line breaking
     /// The lines in the
@@ -275,6 +279,7 @@ impl<B: Brush> Default for LayoutData<B> {
             runs: Vec::new(),
             items: Vec::new(),
             soft_hyphens: Vec::new(),
+            ligature_lines: Vec::new(),
             lines: Vec::new(),
             line_items: Vec::new(),
             aligned_subtree_offsets: Vec::new(),
@@ -305,6 +310,7 @@ impl<B: Brush> LayoutData<B> {
         self.runs.clear();
         self.items.clear();
         self.soft_hyphens.clear();
+        self.ligature_lines.clear();
         self.lines.clear();
         self.line_items.clear();
         self.aligned_subtree_offsets.clear();
@@ -350,6 +356,43 @@ impl<B: Brush> LayoutData<B> {
                 line: None,
             });
         }
+    }
+
+    /// RINCH (rinch #2381): no line breaks a ligature split yet.
+    pub(crate) fn collect_ligatures(&mut self) {
+        self.ligature_lines.clear();
+        self.ligature_lines
+            .resize(self.shaped_text.ligature_splits().len(), None);
+    }
+
+    /// RINCH (rinch #2381): break (`Some(line)`, the line ending inside it) or join (`None`)
+    /// ligature split `index`.
+    pub(crate) fn set_ligature(&mut self, index: usize, line: Option<u32>) {
+        self.ligature_lines[index] = line;
+        self.shaped_text.set_ligature_broken(index, line.is_some());
+    }
+
+    /// RINCH (rinch #2381): when a line ending right before shaped cluster `cluster` would end
+    /// inside a joined ligature split: the split, and how much wider the line is with the pieces
+    /// before `cluster` drawn on their own than joined (negative when narrower).
+    #[inline]
+    pub(crate) fn ligature_end_at(&self, cluster: u32) -> Option<(usize, f32)> {
+        let shaped = &self.shaped_text;
+        let index = shaped.ligature_split_at(cluster)?;
+        let split = &shaped.ligature_splits()[index];
+        if split.is_broken() || cluster == split.clusters.start {
+            return None;
+        }
+        let k = (cluster - split.clusters.start) as usize;
+        let broken: f32 = shaped.ligature_broken(index)[..k]
+            .iter()
+            .map(|c| c.advance)
+            .sum();
+        let joined: f32 = shaped.ligature_joined(index)[..k]
+            .iter()
+            .map(|c| c.advance)
+            .sum();
+        Some((index, broken - joined))
     }
 
     /// RINCH (rinch #2614): the soft hyphen whose shaped cluster is `cluster`, if it can draw a
@@ -614,6 +657,7 @@ impl ContentWidthsMeasurer {
 
     #[inline(always)]
     fn measure<B: Brush>(mut self, layout_data: &LayoutData<B>) -> ContentWidths {
+        let shaped = &layout_data.shaped_text;
         let mut items = layout_data.items.iter();
         while let Some(item) = items.next() {
             match item.kind {
@@ -639,6 +683,7 @@ impl ContentWidthsMeasurer {
                             can_hang,
                             is_rtl,
                             soft_hyphens,
+                            shaped,
                         );
                     } else {
                         self.measure_text_run::<B, true>(
@@ -648,6 +693,7 @@ impl ContentWidthsMeasurer {
                             can_hang,
                             is_rtl,
                             soft_hyphens,
+                            shaped,
                         );
                     }
                 }
@@ -712,8 +758,11 @@ impl ContentWidthsMeasurer {
         can_hang: bool,
         is_rtl: bool,
         soft_hyphens: SoftHyphens<'_>,
+        shaped: &ShapedText,
     ) {
         let clusters = slice.shaped_clusters();
+        let first_cluster = slice.shaped_clusters_range().start;
+        let has_ligatures = !shaped.ligature_splits().is_empty();
         // The cluster index at which nothing has been placed on the current line yet, if any.
         let mut empty_at = if self.line_has_content { usize::MAX } else { 0 };
 
@@ -744,6 +793,17 @@ impl ContentWidthsMeasurer {
                 }
                 if SPACED {
                     gap = spacing.gaps(whitespace, cluster.is_soft_hyphen()).after;
+                    // RINCH (rinch #2381): an atom that draws no glyph has no gap
+                    // (`EffectiveSpacing::gaps`).
+                    if gap != 0.
+                        && clusters[i..]
+                            .iter()
+                            .enumerate()
+                            .take_while(|(j, c)| *j == 0 || !c.is_grapheme_start())
+                            .all(|(_, c)| c.glyph_len() == 0)
+                    {
+                        gap = 0.;
+                    }
                 }
             } else if skip_atom {
                 // The next line starts after the whole newline atom.
@@ -755,6 +815,26 @@ impl ContentWidthsMeasurer {
             // earlier ends at it, and a soft wrap break right after it draws its hyphen.
             let soft_hyphen = soft_hyphens.at(i);
             let mut advance = soft_hyphen.map_or(cluster.advance, |s| s.plain.advance);
+            // RINCH (rinch #2381): a ligature measures joined, whether or not a line broken
+            // earlier ends inside it, its advance on its last piece: Chrome 157 does not reshape
+            // a ligature it breaks at min-content and counts it with the text after it (Inter's
+            // `a->b` is 25.06px at min-content, the arrow and `b`; `a-` is 16.34, `>b` 20.39).
+            if has_ligatures && let Some(index) = shaped.ligature_split_at(first_cluster + i as u32)
+            {
+                let split = &shaped.ligature_splits()[index];
+                let k = first_cluster + i as u32 - split.clusters.start;
+                let last = split.clusters.end - split.clusters.start - 1;
+                let joined = shaped.ligature_joined(index);
+                if k == last {
+                    advance = joined.iter().map(|c| c.advance).sum();
+                } else {
+                    advance = 0.;
+                }
+                if k != 0 {
+                    // Joined, it draws no glyph, so has no gap.
+                    gap = 0.;
+                }
+            }
             if let Some(s) = soft_hyphen {
                 let wraps = style.text_wrap_mode == TextWrapMode::Wrap;
                 self.pending_hyphen = if wraps && style.hyphens != crate::style::Hyphens::None {

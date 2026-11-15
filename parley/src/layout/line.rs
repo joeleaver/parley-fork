@@ -478,6 +478,17 @@ impl<'a, B: Brush> Iterator for GlyphRunIter<'a, B> {
                     let mut glyph_run: Option<(u16, Range<u32>)> = None;
                     while let Some(atom) = atoms.peek() {
                         let (atom_glyph_count, atom_advance) = atoms.measure(&atom);
+                        // RINCH (rinch #2381): an atom without glyphs can have an advance (a
+                        // ligature's piece other than the one drawing it, `LigatureSplit`):
+                        // it moves what follows, in this glyph run or, before one starts, the
+                        // next.
+                        if atom_glyph_count == 0 {
+                            if glyph_run.is_some() {
+                                advance += atom_advance;
+                            } else {
+                                self.offset += atom_advance;
+                            }
+                        }
                         if atom_glyph_count != 0 {
                             let atom_style_index = atom.characters()[0].style_index;
                             let atom_clusters = atom.shaped_clusters_range();

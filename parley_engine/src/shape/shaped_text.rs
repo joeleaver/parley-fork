@@ -152,6 +152,45 @@ pub struct ShapedText {
     glyphs: Vec<Glyph>,
     fonts: Vec<FontInstance>,
     normalized_coords: Vec<NormalizedCoord>,
+    /// RINCH (rinch #2381): the clusters that span a soft wrap opportunity, split there.
+    ligature_splits: Vec<LigatureSplit>,
+    /// RINCH (rinch #2381): each [`LigatureSplit`]'s pieces, joined and then broken.
+    ligature_forms: Vec<ShapedCluster>,
+}
+
+/// RINCH (rinch #2381): a shaped cluster spanning a soft wrap opportunity, such as Inter's `->`
+/// arrow (its `calt` ligature) where Chrome's line breaker has an opportunity between `-` and `>`.
+///
+/// Such a cluster is stored split at each opportunity inside it into pieces, one shaped cluster
+/// each, so that a line can end between them. Joined (as shaped, the default) the piece drawn
+/// first (the logically first, or the last in a right-to-left run) draws the cluster's glyphs and
+/// the others draw nothing; the cluster's advance is shared over the pieces by their graphemes.
+/// Broken (a line ends inside it) each piece draws its characters shaped on their own,
+/// as Blink reshapes both sides of a break inside a ligature: `a->b` broken after `-` draws `a-`
+/// and `>b`. [`ShapedText::set_ligature_broken`] swaps between the two.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LigatureSplit {
+    /// The run, an index into [`ShapedText::runs`].
+    pub run: u32,
+    /// The pieces' shaped clusters, a range into [`ShapedText::shaped_clusters`].
+    pub clusters: Range<u32>,
+    /// Where the pieces' forms start in `ShapedText::ligature_forms`.
+    forms: u32,
+    /// Whether the pieces are broken.
+    broken: bool,
+}
+
+impl LigatureSplit {
+    /// Whether the pieces draw their broken forms.
+    #[inline(always)]
+    pub fn is_broken(&self) -> bool {
+        self.broken
+    }
+
+    #[inline(always)]
+    fn len(&self) -> u32 {
+        self.clusters.end - self.clusters.start
+    }
 }
 
 impl ShapedText {
@@ -179,6 +218,8 @@ impl ShapedText {
         self.glyphs.clear();
         self.fonts.clear();
         self.normalized_coords.clear();
+        self.ligature_splits.clear();
+        self.ligature_forms.clear();
     }
 
     /// Get a [`ShapedSlice`] of the run at `run_index`.
@@ -310,6 +351,288 @@ impl ShapedText {
                 run.shaped_clusters_range.start as usize..run.shaped_clusters_range.end as usize;
             run.advance = self.shaped_clusters[range].iter().map(|c| c.advance).sum();
         }
+    }
+
+    /// RINCH (rinch #2381): the clusters split at the soft wrap opportunities inside them, in
+    /// logical order.
+    #[inline(always)]
+    pub fn ligature_splits(&self) -> &[LigatureSplit] {
+        &self.ligature_splits
+    }
+
+    /// RINCH (rinch #2381): the [`LigatureSplit`] shaped cluster `cluster` is a piece of, if any.
+    #[inline]
+    pub fn ligature_split_at(&self, cluster: u32) -> Option<usize> {
+        if self.ligature_splits.is_empty() {
+            return None;
+        }
+        let i = self
+            .ligature_splits
+            .partition_point(|s| s.clusters.end <= cluster);
+        self.ligature_splits
+            .get(i)
+            .filter(|s| s.clusters.contains(&cluster))
+            .map(|_| i)
+    }
+
+    /// RINCH (rinch #2381): split `index`'s pieces as shaped together, the first holding the
+    /// glyphs and the whole advance.
+    pub fn ligature_joined(&self, index: usize) -> &[ShapedCluster] {
+        let s = &self.ligature_splits[index];
+        let start = s.forms as usize;
+        &self.ligature_forms[start..start + s.len() as usize]
+    }
+
+    /// RINCH (rinch #2381): split `index`'s pieces, each shaped on its own.
+    pub fn ligature_broken(&self, index: usize) -> &[ShapedCluster] {
+        let s = &self.ligature_splits[index];
+        let start = (s.forms + s.len()) as usize;
+        &self.ligature_forms[start..start + s.len() as usize]
+    }
+
+    /// RINCH (rinch #2381): draw split `index`'s pieces broken (each shaped on its own) or joined
+    /// (as shaped), and update its run's advance.
+    #[doc(hidden)]
+    pub fn set_ligature_broken(&mut self, index: usize, broken: bool) {
+        let Some(s) = self.ligature_splits.get_mut(index) else {
+            return;
+        };
+        if s.broken == broken {
+            return;
+        }
+        s.broken = broken;
+        let (run, clusters, len) = (s.run, s.clusters.clone(), s.len());
+        let forms = s.forms + if broken { len } else { 0 };
+        let forms = forms as usize..(forms + len) as usize;
+        self.shaped_clusters[clusters.start as usize..clusters.end as usize]
+            .copy_from_slice(&self.ligature_forms[forms]);
+        if let Some(run) = self.runs.get_mut(run as usize) {
+            let range =
+                run.shaped_clusters_range.start as usize..run.shaped_clusters_range.end as usize;
+            run.advance = self.shaped_clusters[range].iter().map(|c| c.advance).sum();
+        }
+    }
+
+    /// RINCH (rinch #2470): split run `run_index` in two before its shaped cluster `cluster`,
+    /// which must be one of its clusters other than its first and start an atom (a grapheme)
+    /// that is not a piece of a [`LigatureSplit`] other than its first.
+    ///
+    /// The clusters keep their glyphs and advances as shaped together, so kerning and
+    /// ligatures across the split stay. A caller that shaped across a place that must be a run
+    /// boundary (an out-of-flow inline box) splits there afterwards. Runs (and ligature
+    /// splits) after `run_index` move up by one.
+    #[doc(hidden)]
+    pub fn split_run(&mut self, run_index: usize, cluster: u32) {
+        let run = &self.runs[run_index];
+        debug_assert!(
+            run.shaped_clusters_range.start < cluster && cluster < run.shaped_clusters_range.end,
+            "a run splits before one of its clusters other than its first"
+        );
+        let first_char = self.shaped_clusters[cluster as usize].chars_range.0;
+        let byte = self.characters[first_char as usize].text_byte_start as usize;
+        // The first glyph in the glyph array the second half's clusters use, if any.
+        let glyph = self.shaped_clusters[cluster as usize..run.shaped_clusters_range.end as usize]
+            .iter()
+            .filter(|c| !c.has_inline_glyph() && c.glyph_len() > 0)
+            .map(|c| c.glyph_offset as usize)
+            .min()
+            .unwrap_or(run.glyphs_range.end)
+            .clamp(run.glyphs_range.start, run.glyphs_range.end);
+        let mut second = run.clone();
+        let first = &mut self.runs[run_index];
+        let char_offset = first_char as usize - first.characters_range.start as usize;
+        first.range.byte_range.end = byte;
+        first.range.char_range.end = first.range.char_range.start + char_offset;
+        first.characters_range.end = first_char;
+        first.shaped_clusters_range.end = cluster;
+        first.glyphs_range.end = glyph;
+        second.range.byte_range.start = byte;
+        second.range.char_range.start = first.range.char_range.end;
+        second.characters_range.start = first_char;
+        second.shaped_clusters_range.start = cluster;
+        second.glyphs_range.start = glyph;
+        let advance = |clusters: &[ShapedCluster], range: &Range<u32>| -> f32 {
+            clusters[range.start as usize..range.end as usize]
+                .iter()
+                .map(|c| c.advance)
+                .sum()
+        };
+        first.advance = advance(&self.shaped_clusters, &first.shaped_clusters_range);
+        second.advance = advance(&self.shaped_clusters, &second.shaped_clusters_range);
+        self.runs.insert(run_index + 1, second);
+        for split in &mut self.ligature_splits {
+            if split.run as usize > run_index
+                || (split.run as usize == run_index && split.clusters.start >= cluster)
+            {
+                split.run += 1;
+            }
+        }
+    }
+
+    /// RINCH (rinch #2381): the clusters of the last run pushed that span a soft wrap
+    /// opportunity, with the character offsets the opportunities inside each split it into:
+    /// `(cluster, [start, opportunity.., end])`. Empty (no allocation) in the common case.
+    #[expect(clippy::cast_possible_truncation, reason = "Deferred")]
+    pub(crate) fn last_run_ligature_pieces(&self) -> Vec<(u32, Vec<u32>)> {
+        let mut found = Vec::new();
+        let Some(run) = self.runs.last() else {
+            return found;
+        };
+        let range = run.shaped_clusters_range.clone();
+        for (i, cluster) in self.shaped_clusters[range.start as usize..range.end as usize]
+            .iter()
+            .enumerate()
+        {
+            if cluster.char_len() < 2 {
+                continue;
+            }
+            let chars = cluster.chars_range();
+            let inner = (chars.start + 1..chars.end).filter(|&c| {
+                let ch = &self.characters[c as usize];
+                ch.grapheme_start && ch.flags.is_soft_wrap_opportunity()
+            });
+            let mut bounds: Vec<u32> = core::iter::once(chars.start).chain(inner).collect();
+            if bounds.len() > 1 {
+                bounds.push(chars.end);
+                found.push((range.start + i as u32, bounds));
+            }
+        }
+        found
+    }
+
+    /// RINCH (rinch #2381): split cluster `cluster` of the last run pushed at the character
+    /// offsets `bounds` (`[start, opportunity.., end]`). `broken` holds each piece's glyphs, shaped
+    /// on its own, in paint order. Splits must be applied from the run's end backwards.
+    #[expect(clippy::cast_possible_truncation, reason = "Deferred")]
+    pub(crate) fn split_ligature(&mut self, cluster: u32, bounds: &[u32], broken: &[Vec<Glyph>]) {
+        debug_assert_eq!(
+            bounds.len(),
+            broken.len() + 1,
+            "one shaped piece between each two bounds"
+        );
+        let run_index = self.runs.len() as u32 - 1;
+        let original = self.shaped_clusters[cluster as usize];
+        let piece_flags = |chars_start: u32, glyph_len: u8, inline: bool| {
+            let first = &self.characters[chars_start as usize];
+            ShapedClusterFlags::new(glyph_len)
+                .with_grapheme_start(first.grapheme_start)
+                .with_safe_to_break_before(false)
+                .with_inline_glyph(inline)
+                .with_first_char(
+                    first.flags.is_soft_wrap_opportunity(),
+                    first.whitespace,
+                    first.flags.is_soft_hyphen(),
+                )
+        };
+        // Joined: the piece drawn first (the logically first, or last right to left) draws the
+        // cluster's glyphs, and the cluster's advance is shared over the pieces by their
+        // graphemes, as over the graphemes of an unsplit cluster, so that a caret between them
+        // stands inside the ligature (Chrome 157 puts the one in Inter's `->` at its middle).
+        // A glyph run moves past a piece without glyphs by its advance.
+        let rtl = self.runs.last().unwrap().bidi_level.is_rtl();
+        let drawn = if rtl { broken.len() - 1 } else { 0 };
+        let graphemes: Vec<u32> = bounds
+            .windows(2)
+            .map(|w| {
+                (w[0]..w[1])
+                    .filter(|&c| c == w[0] || self.characters[c as usize].grapheme_start)
+                    .count() as u32
+            })
+            .collect();
+        let total: u32 = graphemes.iter().sum();
+        // The cluster's glyphs, in the glyph array: an inline glyph's advance is its cluster's,
+        // which is the drawn piece's share now, so it moves into the array with its own.
+        let (glyph_offset, glyph_len) = if original.has_inline_glyph() {
+            self.glyphs.push(Glyph {
+                id: original.glyph_offset,
+                x: 0.,
+                y: 0.,
+                advance: original.advance,
+            });
+            (self.glyphs.len() as u32 - 1, 1)
+        } else {
+            (original.glyph_offset, original.glyph_len())
+        };
+        let mut joined = Vec::with_capacity(broken.len());
+        for (k, w) in bounds.windows(2).enumerate() {
+            let (start, end) = (w[0], w[1]);
+            let share = original.advance * graphemes[k] as f32 / total as f32;
+            joined.push(if k == drawn {
+                ShapedCluster {
+                    chars_range: (start, end),
+                    style_index: self.characters[start as usize].style_index,
+                    glyph_offset,
+                    flags: piece_flags(start, glyph_len, false),
+                    advance: share,
+                }
+            } else {
+                ShapedCluster {
+                    chars_range: (start, end),
+                    style_index: self.characters[start as usize].style_index,
+                    // No glyphs: any index in bounds.
+                    glyph_offset: 0,
+                    flags: piece_flags(start, 0, false),
+                    advance: share,
+                }
+            });
+        }
+        // Broken: each piece's own glyphs.
+        let mut pieces = Vec::with_capacity(broken.len());
+        for (w, glyphs) in bounds.windows(2).zip(broken) {
+            let start = w[0];
+            let advance: f32 = glyphs.iter().map(|g| g.advance).sum();
+            let style_index = self.characters[start as usize].style_index;
+            let piece = match glyphs.as_slice() {
+                [g] if g.x == 0. && g.y == 0. => ShapedCluster {
+                    chars_range: (start, w[1]),
+                    style_index,
+                    glyph_offset: g.id,
+                    flags: piece_flags(start, 1, true),
+                    advance,
+                },
+                _ => {
+                    let glyph_offset = self.glyphs.len() as u32;
+                    let glyph_len = glyphs.len().min(usize::from(u8::MAX));
+                    self.glyphs.extend_from_slice(&glyphs[..glyph_len]);
+                    ShapedCluster {
+                        chars_range: (start, w[1]),
+                        style_index,
+                        glyph_offset,
+                        flags: piece_flags(start, glyph_len as u8, false),
+                        advance,
+                    }
+                }
+            };
+            pieces.push(piece);
+        }
+        let n = joined.len() as u32;
+        self.shaped_clusters.splice(
+            cluster as usize..cluster as usize + 1,
+            joined.iter().copied(),
+        );
+        let run = self.runs.last_mut().unwrap();
+        run.shaped_clusters_range.end += n - 1;
+        run.glyphs_range.end = self.glyphs.len();
+        // Splits later in the run were applied first: move them past the new pieces.
+        let at = self
+            .ligature_splits
+            .partition_point(|s| s.clusters.start < cluster);
+        for later in &mut self.ligature_splits[at..] {
+            later.clusters.start += n - 1;
+            later.clusters.end += n - 1;
+        }
+        let forms = self.ligature_forms.len() as u32;
+        self.ligature_forms.extend(joined);
+        self.ligature_forms.extend(pieces);
+        self.ligature_splits.insert(
+            at,
+            LigatureSplit {
+                run: run_index,
+                clusters: cluster..cluster + n,
+                forms,
+                broken: false,
+            },
+        );
     }
 
     #[expect(clippy::cast_possible_truncation, reason = "Deferred")]

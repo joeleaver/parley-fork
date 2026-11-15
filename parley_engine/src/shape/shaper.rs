@@ -10,7 +10,7 @@ use linebender_resource_handle::{Blob, FontData};
 use parlance::{FontFeature, FontVariation, Language};
 
 use crate::{
-    Analysis, CharInfo, ShapedText,
+    Analysis, CharInfo, Glyph, ShapedText,
     itemize::{Item, Segment, TextRange},
     lru_cache::LruCache,
     shape::{CharCluster, cache},
@@ -373,7 +373,69 @@ fn shape_segment(
         );
 
         // Replace buffer to reuse allocation in the next run.
-        scx.unicode_buffer = Some(glyph_buffer.clear());
+        let mut buffer = glyph_buffer.clear();
+
+        // RINCH (rinch #2381): a cluster spanning a soft wrap opportunity (a ligature) is split
+        // there, and each piece is shaped on its own too, to draw when a line ends inside it.
+        let ligatures = shaped_text.last_run_ligature_pieces();
+        for (cluster, bounds) in ligatures.iter().rev() {
+            let chars = &shaped_text.characters()[bounds[0] as usize..];
+            let byte_at = |c: u32| chars[(c - bounds[0]) as usize].text_byte_start as usize;
+            let end_byte = {
+                let last = &shaped_text.characters()[*bounds.last().unwrap() as usize - 1];
+                last.text_byte_range().end
+            };
+            let mut pieces = Vec::with_capacity(bounds.len() - 1);
+            for (k, w) in bounds.windows(2).enumerate() {
+                let start = byte_at(w[0]);
+                let end = if k + 2 == bounds.len() {
+                    end_byte
+                } else {
+                    byte_at(w[1])
+                };
+                buffer.clear();
+                buffer.set_cluster_level(harfrust::BufferClusterLevel::MonotoneCharacters);
+                buffer.push_str(&text[start..end]);
+                // Each piece is shaped as a line's end or start: the text before the first
+                // piece and after the last is its context, never across the break.
+                if k == 0 {
+                    buffer.set_pre_context(&text[..start]);
+                }
+                if k + 2 == bounds.len() {
+                    buffer.set_post_context(&text[end..]);
+                }
+                buffer.set_direction(direction);
+                buffer.set_script(hb_script);
+                if let Some(lang) = &language {
+                    buffer.set_language(lang.clone());
+                }
+                let shaped = harf_shaper.shape(
+                    buffer,
+                    HarfShapeOptions::new()
+                        .plan(Some(shaper_plan))
+                        .features(&scx.features)
+                        .point_size(Some(options.font_size)),
+                );
+                let units_per_em = harf_shaper.units_per_em() as f32;
+                let scale = options.font_size / units_per_em;
+                // In visual order, which is paint order.
+                let glyphs: Vec<Glyph> = shaped
+                    .glyph_infos()
+                    .iter()
+                    .zip(shaped.glyph_positions())
+                    .map(|(info, pos)| Glyph {
+                        id: info.glyph_id,
+                        x: pos.x_offset as f32 * scale,
+                        y: -(pos.y_offset as f32) * scale,
+                        advance: pos.x_advance as f32 * scale,
+                    })
+                    .collect();
+                pieces.push(glyphs);
+                buffer = shaped.clear();
+            }
+            shaped_text.split_ligature(*cluster, bounds, &pieces);
+        }
+        scx.unicode_buffer = Some(buffer);
     };
 
     // This is the run being accumulated, i.e., consecutive graphemes for which `select_font`

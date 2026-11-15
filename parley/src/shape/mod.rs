@@ -7,7 +7,7 @@
 use alloc::vec::Vec;
 use parley_engine::shape::{CharCluster, Coverage};
 use parley_engine::{
-    Analysis, AnalysisDataSources, FontInstance, FontInstanceRef, ShapeOptions, Shaper,
+    Analysis, AnalysisDataSources, FontInstance, FontInstanceRef, ShapeOptions, ShapedText, Shaper,
 };
 use smallvec::SmallVec;
 
@@ -16,7 +16,7 @@ use super::resolve::{ResolveContext, ResolvedStyle};
 use super::style::{Brush, FontFeature};
 use crate::inline_box::LayoutInlineBox;
 use crate::util::{nearly_eq, nearly_zero};
-use crate::{FontContext, FontData, Spacing};
+use crate::{FontContext, FontData, InlineBoxKind, Spacing};
 
 use fontique::{self, Query, QueryFamily, QueryFont};
 use parlance::{GenericFamily, Tag};
@@ -140,8 +140,13 @@ pub(crate) fn shape_text<'a, B: Brush>(
                         // split a run and we were not called, such as at a bidi boundary).
                         inline_box_iter.next();
                     } else if inline_box.index == byte_index {
+                        let kind = inline_box.kind;
                         inline_box_iter.next();
-                        split = true;
+                        // RINCH (rinch #2470): a strut box is no shaping boundary: kerning,
+                        // ligatures and joining go on across it, as Chrome's do across an empty
+                        // element. The run is split at it after shaping
+                        // (`split_runs_at_strut_boxes`).
+                        split |= kind != InlineBoxKind::Strut;
                     } else {
                         break;
                     }
@@ -193,6 +198,8 @@ pub(crate) fn shape_text<'a, B: Brush>(
         &mut layout.data.shaped_text,
     );
 
+    split_runs_at_strut_boxes(&mut layout.data.shaped_text, inline_boxes);
+
     let box_levels = analysis.inline_box_levels();
     let mut inline_box_iter = inline_boxes
         .iter()
@@ -235,6 +242,56 @@ pub(crate) fn shape_text<'a, B: Brush>(
     // Process any remaining inline boxes whose index is greater than the length of the text.
     for (box_idx, _inline_box) in inline_box_iter {
         layout.data.push_inline_box(box_idx, box_levels[box_idx]);
+    }
+}
+
+/// RINCH (rinch #2470): split each shaped run a strut box ([`InlineBoxKind::Strut`]) falls
+/// inside (they are shaped across, see [`shape_text`]) at the box, so that the box is an item between the two
+/// halves and the line breaker places it on the line its text position is on. The halves keep
+/// the glyphs and advances shaped together. A box inside an atom (a ligature, a grapheme)
+/// splits the run after the atom.
+fn split_runs_at_strut_boxes(shaped: &mut ShapedText, inline_boxes: &[LayoutInlineBox]) {
+    let mut run = 0;
+    for inline_box in inline_boxes.iter().map(|b| &b.inline_box) {
+        if inline_box.kind != InlineBoxKind::Strut {
+            continue;
+        }
+        // Boxes are in text order.
+        while shaped
+            .runs()
+            .get(run)
+            .is_some_and(|r| r.range.byte_range.end <= inline_box.index)
+        {
+            run += 1;
+        }
+        let Some(r) = shaped.runs().get(run) else {
+            break;
+        };
+        if inline_box.index <= r.range.byte_range.start {
+            continue;
+        }
+        let clusters = shaped.shaped_clusters();
+        let characters = shaped.characters();
+        let range = r.shaped_clusters_range.clone();
+        // The first cluster at or after the box that starts an atom and is not inside a
+        // ligature split.
+        let mut at = range.start
+            + clusters[range.start as usize..range.end as usize].partition_point(|c| {
+                (characters[c.chars_range().start as usize].text_byte_start as usize)
+                    < inline_box.index
+            }) as u32;
+        while at < range.end
+            && (!clusters[at as usize].is_grapheme_start()
+                || shaped
+                    .ligature_split_at(at)
+                    .is_some_and(|i| shaped.ligature_splits()[i].clusters.start != at))
+        {
+            at += 1;
+        }
+        if at < range.end {
+            shaped.split_run(run, at);
+            run += 1;
+        }
     }
 }
 

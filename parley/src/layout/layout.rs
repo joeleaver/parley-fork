@@ -131,6 +131,17 @@ impl<B: Brush> Layout<B> {
         self.data.calculate_content_widths()
     }
 
+    /// RINCH (rinch #2381): whether a line of the layout ends inside a ligature (a shaped
+    /// cluster spanning a soft wrap opportunity), drawing both sides shaped on their own.
+    ///
+    /// Chrome does not reshape a ligature it breaks at min-content
+    /// ([`Self::calculate_content_widths`] counts it whole with the text after the break), so a
+    /// min-content width read from lines broken at no room is narrower than Chrome's when this
+    /// is `true`.
+    pub fn breaks_inside_ligature(&self) -> bool {
+        self.data.ligature_lines.iter().any(Option::is_some)
+    }
+
     /// Returns the height of the layout.
     pub fn height(&self) -> f32 {
         self.data.height

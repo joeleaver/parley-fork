@@ -3,6 +3,9 @@
 
 //! Tests for per-style span box metrics.
 
+use std::string::{String, ToString};
+use std::vec::Vec;
+
 use super::utils::ColorBrush;
 use super::utils::fonts::{FONT_FAMILY_LIST, create_font_context};
 use crate::layout::style_metrics::StyleMetrics;
@@ -589,4 +592,106 @@ fn the_prior_lines_text_range_holds_a_soft_hyphen_it_ends_with() {
     breaker.break_next_with_length(1).unwrap();
     assert_eq!(breaker.prior_line_text_range(), None);
     breaker.finish();
+}
+
+/// `before`, then a span holding only a box of `kind` with line height `span_lh`, then
+/// `after`, broken at `max_advance`: the layout's lines' (text, advance, line height) and its
+/// number of shaped runs.
+fn box_in_a_span(
+    kind: InlineBoxKind,
+    before: &str,
+    after: &str,
+    span_lh: f32,
+    max_advance: Option<f32>,
+) -> (Vec<(String, f32, f32)>, usize) {
+    let mut fcx = create_font_context();
+    let mut lcx: LayoutContext<ColorBrush> = LayoutContext::new();
+    let root = root_style();
+    let mut builder = lcx.tree_builder(&mut fcx, 1., false, &root);
+    builder.push_text(before);
+    builder.push_style_span(TextStyle {
+        font_size: 40.,
+        line_height: LineHeight::Absolute(span_lh),
+        ..root_style()
+    });
+    builder.push_inline_box(InlineBox {
+        id: 0,
+        kind,
+        index: before.len(),
+        width: 0.,
+        height: 0.,
+        baseline: None,
+        vertical_align: VerticalAlign::BASELINE,
+    });
+    builder.pop_style_span();
+    builder.push_text(after);
+    let (mut layout, text) = builder.build();
+    layout.break_all_lines(max_advance);
+    let lines = layout
+        .lines()
+        .map(|l| {
+            (
+                text[l.text_range()].to_string(),
+                l.metrics().advance,
+                l.metrics().line_height,
+            )
+        })
+        .collect();
+    (lines, layout.data.shaped_text.runs().len())
+}
+
+/// The advance of `text` alone on one line.
+fn text_width(text: &str) -> f32 {
+    let mut fcx = create_font_context();
+    let mut lcx: LayoutContext<ColorBrush> = LayoutContext::new();
+    let root = root_style();
+    let mut builder = lcx.tree_builder(&mut fcx, 1., false, &root);
+    builder.push_text(text);
+    let (mut layout, _) = builder.build();
+    layout.break_all_lines(None);
+    layout.width()
+}
+
+/// rinch-patch (rinch #2470): a strut box is no shaping boundary. Chrome 157 kerns `AV` across
+/// an empty `<span style="font-size: 32px"></span>` (21px against 20.98 without), whose strut
+/// rinch hands parley as a box; parley shaped the text on each side apart, unkerned. The run is
+/// split at the box after shaping, so its span box still reaches the line its text position is
+/// on. An out-of-flow box is a shaping boundary still (Chrome cuts shaping at an empty element
+/// with `vertical-align` other than `baseline`, CSS Text 3 § 7.3).
+#[test]
+fn a_strut_box_keeps_kerning_across_it() {
+    let kerned = text_width("AV");
+    assert!(
+        kerned + 0.5 < text_width("A") + text_width("V"),
+        "the font kerns AV"
+    );
+    let (lines, runs) = box_in_a_span(InlineBoxKind::Strut, "A", "V", 80., None);
+    assert_eq!(lines.len(), 1);
+    assert!(
+        (lines[0].1 - kerned).abs() < 0.01,
+        "{} != {kerned}",
+        lines[0].1
+    );
+    assert_eq!(lines[0].2, 80., "the span's strut is on the line");
+    assert_eq!(runs, 2, "the run is split at the box");
+    let (lines, _) = box_in_a_span(InlineBoxKind::OutOfFlow, "A", "V", 80., None);
+    assert!(
+        (lines[0].1 - text_width("A") - text_width("V")).abs() < 0.01,
+        "an out-of-flow box cuts shaping"
+    );
+    assert_eq!(lines[0].2, 80.);
+}
+
+/// A strut box's span box goes on the line its text position is on: a run split at the box is
+/// two items, and a line broken before or after the box holds it where it stands in the text.
+#[test]
+fn a_strut_box_inside_a_run_stays_on_its_line() {
+    // Every opportunity taken: `AA ` / `BB ` / `CC`, the box between the `B`s.
+    let (lines, _) = box_in_a_span(InlineBoxKind::Strut, "AA B", "B CC", 80., Some(1.));
+    let heights: Vec<(&str, f32)> = lines.iter().map(|(t, _, h)| (t.as_str(), *h)).collect();
+    assert_eq!(heights, [("AA ", 30.), ("BB ", 80.), ("CC", 30.)]);
+    // On the last line of a run that spans three.
+    let (lines, _) = box_in_a_span(InlineBoxKind::Strut, "AA BB C", "C", 80., Some(1.));
+    let heights: Vec<(&str, f32)> = lines.iter().map(|(t, _, h)| (t.as_str(), *h)).collect();
+    assert_eq!(heights, [("AA ", 30.), ("BB ", 30.), ("CC", 80.)]);
 }

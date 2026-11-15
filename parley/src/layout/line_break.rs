@@ -96,6 +96,11 @@ struct LineState {
 
     /// RINCH (rinch #2654): the style of [`Self::soft_hyphen`]'s soft hyphen.
     soft_hyphen_style: u16,
+
+    /// RINCH (rinch #2381): when the line, ended here, would end inside a ligature (a cluster
+    /// split at a soft wrap opportunity, [`parley_engine::LigatureSplit`]): how much wider the
+    /// line is with the ligature's pieces drawn on their own (negative when narrower).
+    ligature_end: Option<f32>,
 }
 
 impl LineState {
@@ -106,6 +111,7 @@ impl LineState {
         self.num_word_separators = 0;
         self.soft_hyphen = None;
         self.soft_hyphen_hang = 0.0;
+        self.ligature_end = None;
     }
 
     /// RINCH (rinch #2614): whether the line, ended here, fits `max_advance` with the hyphen it
@@ -115,6 +121,10 @@ impl LineState {
     fn fits_soft_hyphen(&self, max_advance: f32) -> bool {
         self.soft_hyphen
             .is_none_or(|h| self.x - self.soft_hyphen_hang + h <= max_advance)
+            // RINCH (rinch #2381): and with a ligature it ends inside drawn as two pieces.
+            && self
+                .ligature_end
+                .is_none_or(|d| self.x + d <= max_advance)
     }
 }
 
@@ -718,6 +728,9 @@ impl BreakerState {
         self.line.items.end = self.item_idx + 1;
         self.line.clusters.end = atom.shaped_clusters_range().end;
         self.cluster_idx = atom.shaped_clusters_range().end;
+        self.line.ligature_end = data
+            .ligature_end_at(atom.shaped_clusters_range().end)
+            .map(|(_, delta)| delta);
         let x = core::mem::replace(&mut self.line.x, next_x);
         self.line.num_word_separators += u32::from(is_word_separator);
         if let Some(i) = data.soft_hyphen_at(atom.shaped_clusters_range().start) {
@@ -757,6 +770,7 @@ impl BreakerState {
         self.item_idx += 1;
         self.line.items.end += 1;
         self.line.x = next_x;
+        self.line.ligature_end = None;
         self.line
             .box_metrics
             .add_inline_box(0, 0., ascent, descent, false, &mut self.subtrees);
@@ -775,6 +789,7 @@ impl BreakerState {
         self.item_idx += 1;
         self.line.items.end += 1;
         self.line.x = next_x;
+        self.line.ligature_end = None;
         // RINCH (rinch #2614): a zero-height box (an inline element's end padding, border or
         // margin, which rinch hands over as one) does not end a soft hyphen's piece: the hyphen
         // is drawn inside the element, before it.
@@ -916,6 +931,10 @@ impl<'a, B: Brush> BreakLines<'a, B> {
         for i in 0..layout.data.soft_hyphens.len() {
             layout.data.set_soft_hyphen(i, None);
         }
+        // RINCH (rinch #2381): nor inside a ligature.
+        for i in 0..layout.data.ligature_lines.len() {
+            layout.data.set_ligature(i, None);
+        }
         let mut lines = LineLayout::default();
         lines.swap(&mut layout.data);
         lines.lines.clear();
@@ -1003,6 +1022,13 @@ impl<'a, B: Brush> BreakLines<'a, B> {
             let line = self.lines.lines.len() as u32;
             self.layout.data.set_soft_hyphen(index, Some(line));
             self.state.line.x += self.layout.data.soft_hyphens[index].hyphen.advance;
+        }
+        // RINCH (rinch #2381): a line that ends inside a ligature breaks it: both sides draw
+        // their characters shaped on their own, this line's end and the next line's start.
+        if let Some((index, delta)) = self.line_end_ligature(reason) {
+            let line = self.lines.lines.len() as u32;
+            self.layout.data.set_ligature(index, Some(line));
+            self.state.line.x += delta;
         }
         commit_line(
             self.layout,
@@ -1146,6 +1172,33 @@ impl<'a, B: Brush> BreakLines<'a, B> {
                 self.layout.data.set_soft_hyphen(i, None);
             }
         }
+        // RINCH (rinch #2381): the ligatures the lines dropped ended inside are joined again.
+        for i in 0..self.layout.data.ligature_lines.len() {
+            if self.layout.data.ligature_lines[i].is_some_and(|line| line as usize >= kept) {
+                self.layout.data.set_ligature(i, None);
+            }
+        }
+    }
+
+    /// RINCH (rinch #2381): the joined ligature split the line being committed ends inside, for
+    /// a line broken by `reason`, and how much wider the line is with it broken.
+    fn line_end_ligature(&self, reason: BreakReason) -> Option<(usize, f32)> {
+        if !matches!(reason, BreakReason::Regular | BreakReason::Emergency)
+            || self.layout.data.ligature_lines.is_empty()
+        {
+            return None;
+        }
+        let line = &self.state.line;
+        let items = &self.layout.data.items;
+        let last = items
+            .get(line.items.start..line.items.end.min(items.len()))?
+            .last()?;
+        if last.kind != LayoutItemKind::TextRun || line.clusters.end <= line.clusters.start {
+            return None;
+        }
+        let (index, delta) = self.layout.data.ligature_end_at(line.clusters.end)?;
+        (self.layout.data.shaped_text.ligature_splits()[index].run as usize == last.index)
+            .then_some((index, delta))
     }
 
     /// RINCH (rinch #2614): the soft hyphen the line being committed ends at, for a line broken
@@ -1275,7 +1328,7 @@ impl<'a, B: Brush> BreakLines<'a, B> {
                     // line and otherwise skipped.
                     let (width_contribution, height_contribution) = match inline_box.kind {
                         InlineBoxKind::InFlow => (inline_box.width, inline_box.height),
-                        InlineBoxKind::OutOfFlow => {
+                        InlineBoxKind::OutOfFlow | InlineBoxKind::Strut => {
                             self.append_layout_inline_box(item.index, self.state.line.x);
                             continue;
                         }
@@ -1420,10 +1473,25 @@ impl<'a, B: Brush> BreakLines<'a, B> {
                         // Compute the x position of the content being currently processed
                         let next_x = self.state.line.x + advance;
 
+                        // RINCH (rinch #2381): an atom right before a soft wrap opportunity inside
+                        // a ligature fits when the line fits ended there, the ligature drawn as
+                        // two pieces (Chrome 157 breaks `a->b` as `a-` / `>b` in 20px, where the
+                        // arrow does not fit after `a`). The next atom then breaks the line there.
+                        let ligature_fits =
+                            next_x > max_advance && style.text_wrap_mode == TextWrapMode::Wrap && {
+                                let end = atom.shaped_clusters_range().end;
+                                self.layout.data.ligature_end_at(end).is_some_and(|(_, d)| {
+                                    next_x + d <= max_advance
+                                        && self.layout.data.shaped_text.shaped_clusters()
+                                            [end as usize]
+                                            .is_soft_wrap_opportunity_before()
+                                })
+                            };
+
                         // If the content fits (the x position does NOT exceed max_advance)
                         //
                         // We simply append the atom to the current line
-                        if next_x <= max_advance {
+                        if next_x <= max_advance || ligature_fits {
                             if max_height_exceeded {
                                 return self.max_height_break_data(line_height);
                             }

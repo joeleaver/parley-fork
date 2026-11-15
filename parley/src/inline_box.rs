@@ -59,4 +59,13 @@ pub enum InlineBoxKind {
     ///
     /// They can be used to implement advanced layout modes such as CSS's `float`
     CustomOutOfFlow,
+    /// RINCH (rinch #2470): a `Strut` box stands for the span it is in, such as an empty inline
+    /// element: it puts that span's box (its strut, CSS 2.2 § 10.8.1) on the line its text
+    /// position is on, as an `OutOfFlow` box does, takes no room, is no content and gives no
+    /// break opportunity. Unlike the other kinds it is no shaping boundary: the text on either
+    /// side is shaped together (kerning, ligatures and joining go on across it, as across an
+    /// empty element in Chrome, CSS Text 3 § 7.3), and its run is split at it afterwards.
+    ///
+    /// Its width, height, baseline and vertical alignment are not used.
+    Strut,
 }
