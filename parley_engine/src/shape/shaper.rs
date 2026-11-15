@@ -396,14 +396,11 @@ fn shape_segment(
                 buffer.clear();
                 buffer.set_cluster_level(harfrust::BufferClusterLevel::MonotoneCharacters);
                 buffer.push_str(&text[start..end]);
-                // Each piece is shaped as a line's end or start: the text before the first
-                // piece and after the last is its context, never across the break.
-                if k == 0 {
-                    buffer.set_pre_context(&text[..start]);
-                }
-                if k + 2 == bounds.len() {
-                    buffer.set_post_context(&text[end..]);
-                }
+                // Each piece has the text on both sides as its context, across the break too, so
+                // that it keeps its joining forms (Chrome 157 draws a lam-alef broken under
+                // `break-all` as a joined lam and alef).
+                buffer.set_pre_context(&text[..start]);
+                buffer.set_post_context(&text[end..]);
                 buffer.set_direction(direction);
                 buffer.set_script(hb_script);
                 if let Some(lang) = &language {

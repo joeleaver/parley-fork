@@ -213,3 +213,53 @@ fn a_glyph_run_after_the_ligature_starts_past_it() {
     assert_eq!(runs.len(), 2, "the red `b` is a glyph run of its own");
     close(runs[1], width("afi"));
 }
+
+/// A subset of Noto Sans Arabic (lam, alef, kaf, meem, space), which ligates lam-alef.
+const ARABIC: &[u8] = include_bytes!("assets/NotoSansArabic-LamAlef-subset.ttf");
+
+/// `text` in the Arabic subset at 16px under `break-all`, broken at `max_advance`: each line's
+/// advance.
+fn arabic_lines(text: &str, max_advance: Option<f32>) -> Vec<f32> {
+    let mut fcx = create_font_context();
+    fcx.collection
+        .register_fonts(peniko::Blob::new(std::sync::Arc::new(ARABIC)), None);
+    let root = TextStyle {
+        font_family: FontFamily::from("Noto Sans Arabic"),
+        font_size: 16.,
+        line_height: LineHeight::Absolute(20.),
+        word_break: WordBreak::BreakAll,
+        ..TextStyle::default()
+    };
+    let mut lcx: LayoutContext<ColorBrush> = LayoutContext::new();
+    let mut builder = lcx.tree_builder(&mut fcx, 1., false, &root);
+    builder.push_text(text);
+    let (mut layout, _) = builder.build();
+    assert_eq!(
+        layout.data.shaped_text.ligature_splits().len(),
+        1,
+        "lam-alef is split"
+    );
+    layout.break_all_lines(max_advance);
+    layout.lines().map(|l| l.metrics().advance).collect()
+}
+
+/// Broken inside lam-alef, each piece keeps its joining forms: it is shaped with the text on
+/// both sides as context, as Chrome 157 shapes them (`لا` in 1px: lam 4.17, alef 4.66; `كلام`:
+/// kaf 6.59, lam 4.81, alef 4.66, meem 7.75). Shaped with no context across the break, lam and
+/// alef took their isolated forms. Chrome's widths are in 1/64 px.
+#[test]
+fn arabic_pieces_keep_their_joining_forms() {
+    let got = arabic_lines("\u{644}\u{627}", Some(1.));
+    assert_eq!(got.len(), 2);
+    for (got, chrome) in got.iter().zip([4.1719, 4.6563]) {
+        assert!((got - chrome).abs() < 0.02, "{got} != Chrome's {chrome}");
+    }
+    let got = arabic_lines("\u{643}\u{644}\u{627}\u{645}", Some(1.));
+    assert_eq!(got.len(), 4);
+    for (got, chrome) in got.iter().zip([6.5938, 4.8125, 4.6563, 7.75]) {
+        assert!((got - chrome).abs() < 0.02, "{got} != Chrome's {chrome}");
+    }
+    // Joined on one line.
+    let got = arabic_lines("\u{643}\u{644}\u{627}\u{645}", None);
+    assert!((got[0] - 23.9219).abs() < 0.02, "{}", got[0]);
+}

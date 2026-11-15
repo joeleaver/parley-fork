@@ -487,15 +487,20 @@ impl ShapedText {
                 continue;
             }
             let chars = cluster.chars_range();
-            let inner = (chars.start + 1..chars.end).filter(|&c| {
-                let ch = &self.characters[c as usize];
+            // An opportunity inside a grapheme (a cluster split by itemization) is not one a
+            // line can end at: the pieces are atoms, which are graphemes.
+            let is_inner = |c: &u32| {
+                let ch = &self.characters[*c as usize];
                 ch.grapheme_start && ch.flags.is_soft_wrap_opportunity()
-            });
-            let mut bounds: Vec<u32> = core::iter::once(chars.start).chain(inner).collect();
-            if bounds.len() > 1 {
-                bounds.push(chars.end);
-                found.push((range.start + i as u32, bounds));
+            };
+            if !(chars.start + 1..chars.end).any(|c| is_inner(&c)) {
+                continue;
             }
+            let mut bounds: Vec<u32> = core::iter::once(chars.start)
+                .chain((chars.start + 1..chars.end).filter(is_inner))
+                .collect();
+            bounds.push(chars.end);
+            found.push((range.start + i as u32, bounds));
         }
         found
     }
