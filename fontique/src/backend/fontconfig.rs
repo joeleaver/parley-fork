@@ -35,8 +35,8 @@ use fontconfig_sys::{
     FcFontRenderPrepare, FcFontSetDestroy, FcFontSort, FcInitLoadConfig, FcLangSetAdd,
     FcLangSetCopy, FcLangSetCreate, FcLangSetDestroy, FcNameUnparse, FcPatternAddBool,
     FcPatternAddCharSet, FcPatternAddLangSet, FcPatternAddString, FcPatternCreate,
-    FcPatternDestroy, FcPatternGetInteger, FcPatternGetString, FcPatternReference, FcStrFree,
-    FcStrListDone, FcStrListNext,
+    FcPatternDestroy, FcPatternGetBool, FcPatternGetInteger, FcPatternGetString,
+    FcPatternReference, FcStrFree, FcStrListDone, FcStrListNext,
 };
 
 use hashbrown::{HashMap, HashSet, hash_map::Entry};
@@ -221,6 +221,25 @@ impl Pattern {
             return Err(MatchErr::from_raw(result));
         }
         Ok(dest)
+    }
+
+    fn get_bool(&self, object: &CStr, n: u32) -> MatchResult<bool> {
+        let mut dest = 0;
+        let result = unsafe {
+            ffi_dispatch!(
+                feature = "fontconfig-dlopen",
+                LIB,
+                FcPatternGetBool,
+                self.inner.as_ptr(),
+                object.as_ptr(),
+                n.try_into().map_err(|_| MatchErr::Other)?,
+                &raw mut dest
+            )
+        };
+        if result != FcResultMatch {
+            return Err(MatchErr::from_raw(result));
+        }
+        Ok(dest != 0)
     }
 }
 
@@ -890,6 +909,29 @@ impl SystemFonts {
         Some(crate::SystemFamilyMatch {
             configured,
             matched,
+        })
+    }
+
+    /// The rendering properties of the font fontconfig matches the family
+    /// `name` to: a pattern for `name` with the configuration's and the
+    /// default substitutions applied, `FcFontMatch`'s font (which has been
+    /// through `FcFontRenderPrepare`, so the configuration's `target="font"`
+    /// rules too), and its `antialias`, `hinting`, `hintstyle`, `rgba` and
+    /// `lcdfilter`. The same answer as from a configuration loaded with
+    /// `FcInitLoadConfigAndFonts`, which is how this one was made.
+    pub(crate) fn render_properties(&self, name: &str) -> Option<crate::SystemRenderProperties> {
+        let config = self.config.as_ref()?;
+        let mut pattern = Pattern::new()?;
+        pattern.add_string(FC_FAMILY, CString::new(name).ok()?.as_c_str());
+        config.substitute(&mut pattern, FcMatchPattern);
+        pattern.default_substitute();
+        let font = config.font_match(&pattern).ok()?;
+        Some(crate::SystemRenderProperties {
+            antialias: font.get_bool(c"antialias", 0).ok(),
+            hinting: font.get_bool(c"hinting", 0).ok(),
+            hint_style: font.get_int(c"hintstyle", 0).ok(),
+            rgba: font.get_int(c"rgba", 0).ok(),
+            lcd_filter: font.get_int(c"lcdfilter", 0).ok(),
         })
     }
 

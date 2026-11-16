@@ -150,6 +150,19 @@ impl Collection {
         self.inner.system_family_match(name)
     }
 
+    /// The system font backend's rendering properties for the family
+    /// `name` (antialiasing, hinting, subpixel order, LCD filter), from the
+    /// configuration the scan was made with, or `None` where the backend has
+    /// no such query (only fontconfig has one), no system fonts were loaded,
+    /// or nothing matched. See [`SystemRenderProperties`].
+    ///
+    /// This asks the backend every time; it is not cached. It reads no
+    /// configuration of its own, so it costs one match, not a configuration
+    /// load and a font scan.
+    pub fn system_render_properties(&self, name: &str) -> Option<SystemRenderProperties> {
+        self.inner.system_render_properties(name)
+    }
+
     /// What the system font scan read, to watch for a change that makes it
     /// out of date (a font installed, a font directory added to the
     /// configuration). See [`SystemFontPaths`].
@@ -284,6 +297,28 @@ pub struct SystemFamilyMatch {
     /// The family names of the best-matching font (`FcFontMatch`), its
     /// first name first.
     pub matched: Vec<String>,
+}
+
+/// The rendering properties of the font the system matches a family to, as
+/// [`Collection::system_render_properties`] returns them.
+///
+/// On fontconfig these are the matched font's `FC_ANTIALIAS`, `FC_HINTING`,
+/// `FC_HINT_STYLE`, `FC_RGBA` and `FC_LCD_FILTER`, as fontconfig's integers
+/// and booleans (`FC_HINT_*`, `FC_RGBA_*`, `FC_LCD_*`); `None` where the
+/// matched font has no such property.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct SystemRenderProperties {
+    /// `antialias`.
+    pub antialias: Option<bool>,
+    /// `hinting`.
+    pub hinting: Option<bool>,
+    /// `hintstyle` (`FC_HINT_NONE` 0 to `FC_HINT_FULL` 3).
+    pub hint_style: Option<i32>,
+    /// `rgba` (`FC_RGBA_UNKNOWN` 0 to `FC_RGBA_NONE` 5).
+    pub rgba: Option<i32>,
+    /// `lcdfilter` (`FC_LCD_NONE` 0 to `FC_LCD_LEGACY` 3).
+    pub lcd_filter: Option<i32>,
 }
 
 /// The files and directories a system font scan read, as
@@ -438,6 +473,15 @@ impl Inner {
         #[cfg(all(feature = "system", any(target_os = "linux", target_os = "freebsd")))]
         if let Some(system) = &self.system {
             return system.fonts.lock().unwrap().family_match(name);
+        }
+        let _ = name;
+        None
+    }
+
+    pub fn system_render_properties(&self, name: &str) -> Option<SystemRenderProperties> {
+        #[cfg(all(feature = "system", any(target_os = "linux", target_os = "freebsd")))]
+        if let Some(system) = &self.system {
+            return system.fonts.lock().unwrap().render_properties(name);
         }
         let _ = name;
         None
@@ -1091,6 +1135,15 @@ mod tests {
             ..Default::default()
         });
         assert_eq!(collection.system_family_match("Arial"), None);
+    }
+
+    #[test]
+    fn no_system_render_properties_without_system_fonts() {
+        let collection = Collection::new(CollectionOptions {
+            system_fonts: false,
+            ..Default::default()
+        });
+        assert_eq!(collection.system_render_properties("sans-serif"), None);
     }
 
     #[test]

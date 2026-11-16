@@ -63,6 +63,7 @@ pub use charmap::{Charmap, CharmapIndex};
 pub use collection::SystemFontPaths;
 pub use collection::{
     Collection, CollectionOptions, Query, QueryFamily, QueryFont, QueryStatus, SystemFamilyMatch,
+    SystemRenderProperties,
 };
 pub use fallback::FallbackKey;
 pub use family::{FamilyId, FamilyInfo};
