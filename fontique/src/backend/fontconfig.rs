@@ -546,6 +546,22 @@ impl Config {
         Ok(font_set)
     }
 
+    /// The default substitutions (`FcDefaultSubstitute`) with this
+    /// configuration's defaults (`FcConfigSetDefaultSubstitute`, fontconfig
+    /// 2.15 and later). `FcDefaultSubstitute` takes them from the process's
+    /// *current* configuration, which it loads with its fonts the first time
+    /// (`FcInitLoadConfigAndFonts`: about 46 M instructions), beside this one,
+    /// made from the same files. A fontconfig without the function reads no
+    /// configuration in `FcDefaultSubstitute`, and that is called instead.
+    fn default_substitute(&self, pattern: &mut Pattern) {
+        match config_default_substitute() {
+            // SAFETY: `FcConfigSetDefaultSubstitute(FcConfig *, FcPattern *)`,
+            // as fontconfig.h declares it; both pointers are live.
+            Some(f) => unsafe { f(self.inner.as_ptr(), pattern.inner.as_ptr()) },
+            None => pattern.default_substitute(),
+        }
+    }
+
     fn font_match(&self, pattern: &Pattern) -> MatchResult<Pattern> {
         let mut result = 0;
         let pattern = unsafe {
@@ -614,6 +630,35 @@ impl Config {
             }
         }
     }
+}
+
+type ConfigDefaultSubstitute = unsafe extern "C" fn(*mut FcConfig, *mut FcPattern);
+
+/// `FcConfigSetDefaultSubstitute` from the libfontconfig already loaded, or
+/// `None` before fontconfig 2.15 (or where it cannot be found). Looked up at
+/// run time: a binary that named it would not start with an older fontconfig.
+fn config_default_substitute() -> Option<ConfigDefaultSubstitute> {
+    static FUNCTION: std::sync::OnceLock<Option<ConfigDefaultSubstitute>> =
+        std::sync::OnceLock::new();
+    *FUNCTION.get_or_init(|| {
+        // SAFETY: `RTLD_NOLOAD` only finds the library the process has
+        // already loaded (linked, or opened by the bindings' `dlopen`); the
+        // handle is never closed, so the function stays valid. The symbol, if
+        // present, has the C signature `ConfigDefaultSubstitute` names.
+        unsafe {
+            let lib = libc::dlopen(
+                c"libfontconfig.so.1".as_ptr(),
+                libc::RTLD_LAZY | libc::RTLD_NOLOAD,
+            );
+            if lib.is_null() {
+                return None;
+            }
+            let symbol = libc::dlsym(lib, c"FcConfigSetDefaultSubstitute".as_ptr());
+            (!symbol.is_null()).then(|| {
+                core::mem::transmute::<*mut core::ffi::c_void, ConfigDefaultSubstitute>(symbol)
+            })
+        }
+    })
 }
 
 /// The paths in a fontconfig string list, copied out, and the list freed.
@@ -900,7 +945,7 @@ impl SystemFonts {
         // fonts; one that does not ignores an unknown object.
         pattern.add_string(c"fontwrapper", c"SFNT");
         config.substitute(&mut pattern, FcMatchPattern);
-        pattern.default_substitute();
+        config.default_substitute(&mut pattern);
         let configured = pattern.get_string(FC_FAMILY, 0).ok()?.into_owned();
         let font = config.font_match(&pattern).ok()?;
         let matched = (0..)
@@ -918,13 +963,15 @@ impl SystemFonts {
     /// through `FcFontRenderPrepare`, so the configuration's `target="font"`
     /// rules too), and its `antialias`, `hinting`, `hintstyle`, `rgba` and
     /// `lcdfilter`. The same answer as from a configuration loaded with
-    /// `FcInitLoadConfigAndFonts`, which is how this one was made.
+    /// `FcInitLoadConfigAndFonts`, which is how this one was made; the
+    /// default substitutions take this configuration's defaults
+    /// (`Config::default_substitute`), so no second configuration is loaded.
     pub(crate) fn render_properties(&self, name: &str) -> Option<crate::SystemRenderProperties> {
         let config = self.config.as_ref()?;
         let mut pattern = Pattern::new()?;
         pattern.add_string(FC_FAMILY, CString::new(name).ok()?.as_c_str());
         config.substitute(&mut pattern, FcMatchPattern);
-        pattern.default_substitute();
+        config.default_substitute(&mut pattern);
         let font = config.font_match(&pattern).ok()?;
         Some(crate::SystemRenderProperties {
             antialias: font.get_bool(c"antialias", 0).ok(),
@@ -1015,4 +1062,30 @@ fn same_family_name(a: &str, b: &str) -> bool {
     a.chars()
         .flat_map(char::to_lowercase)
         .eq(b.chars().flat_map(char::to_lowercase))
+}
+
+#[cfg(test)]
+mod tests {
+    /// `FcConfigSetDefaultSubstitute` is found wherever fontconfig has it
+    /// (2.15 and later), linked or opened by the bindings: otherwise the
+    /// default substitutions would load a second configuration.
+    #[test]
+    fn the_config_default_substitution_is_found_where_fontconfig_has_it() {
+        #[cfg(feature = "fontconfig-dlopen")]
+        if super::LIB_RESULT.is_err() {
+            return;
+        }
+        #[cfg(feature = "fontconfig-dlopen")]
+        use super::LIB;
+        #[cfg(not(feature = "fontconfig-dlopen"))]
+        use fontconfig_sys::FcGetVersion;
+        // SAFETY: no arguments; returns fontconfig's version as an integer.
+        let version =
+            unsafe { super::ffi_dispatch!(feature = "fontconfig-dlopen", LIB, FcGetVersion,) };
+        assert_eq!(
+            super::config_default_substitute().is_some(),
+            version >= 21500,
+            "fontconfig {version}"
+        );
+    }
 }

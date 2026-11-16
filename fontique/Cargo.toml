@@ -30,6 +30,7 @@ system = [
     "dep:objc2-core-text",
     "dep:objc2-foundation",
     "dep:yeslogic-fontconfig-sys",
+    "dep:libc",
     "dep:roxmltree",
 ]
 
@@ -74,6 +75,9 @@ objc2-core-text = { version = "0.3.2", optional = true, default-features = false
 
 [target.'cfg(any(target_os = "linux", target_os="freebsd"))'.dependencies]
 yeslogic-fontconfig-sys = { version = "6.0.1", optional = true }
+# `dlsym` for `FcConfigSetDefaultSubstitute`, which fontconfig has only since
+# 2.15 and the bindings do not declare.
+libc = { version = "0.2", optional = true }
 
 [target.'cfg(target_os = "android")'.dependencies]
 roxmltree = { version = "0.21.1", optional = true }
