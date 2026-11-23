@@ -101,6 +101,19 @@ struct LineState {
     /// split at a soft wrap opportunity, [`parley_engine::LigatureSplit`]): how much wider the
     /// line is with the ligature's pieces drawn on their own (negative when narrower).
     ligature_end: Option<f32>,
+
+    /// RINCH (rinch #2944): whether a text atom has been appended to the line, of any advance. A
+    /// line whose advance is still 0 but that holds one (a zero width space, a `<wbr>`, a soft
+    /// hyphen) has content to end at a soft wrap opportunity: Chrome 158 lays `<wbr>aaaa` out in
+    /// a 1px box as an empty line, then `aaaa`.
+    holds_atoms: bool,
+
+    /// RINCH (rinch #2944): the wrap mode of the last atom with an advance appended to the line,
+    /// `None` before one. A zero-advance atom after a soft wrap opportunity on a line that already
+    /// overflows is kept on the line when this text wraps (it fits as hanging content), and starts
+    /// the next line when it does not: Chrome 158 lays `aaaa<wbr><wbr>bbbb` out in 1px as `aaaa` /
+    /// `bbbb` under `white-space: normal`, and as `aaaa` / an empty line / `bbbb` under `nowrap`.
+    content_wrap: Option<TextWrapMode>,
 }
 
 impl LineState {
@@ -112,6 +125,8 @@ impl LineState {
         self.soft_hyphen = None;
         self.soft_hyphen_hang = 0.0;
         self.ligature_end = None;
+        self.holds_atoms = false;
+        self.content_wrap = None;
     }
 
     /// RINCH (rinch #2614): whether the line, ended here, fits `max_advance` with the hyphen it
@@ -732,6 +747,10 @@ impl BreakerState {
             .ligature_end_at(atom.shaped_clusters_range().end)
             .map(|(_, delta)| delta);
         let x = core::mem::replace(&mut self.line.x, next_x);
+        self.line.holds_atoms = true;
+        if next_x != x {
+            self.line.content_wrap = Some(data.styles[usize::from(style_index)].text_wrap_mode);
+        }
         self.line.num_word_separators += u32::from(is_word_separator);
         if let Some(i) = data.soft_hyphen_at(atom.shaped_clusters_range().start) {
             self.line.soft_hyphen = Some(data.soft_hyphens[i].hyphen.advance);
@@ -1449,8 +1468,12 @@ impl<'a, B: Brush> BreakLines<'a, B> {
                             // does not is no better than the opportunity before it, if there is
                             // one. With none, it is the first opportunity of an overflowing line
                             // (Chrome 157: `Extra&shy;ordinary` in 40px is `Extra-`, 44.64px).
+                            //
+                            // RINCH (rinch #2944): a line that holds only zero-advance atoms has
+                            // content to end too (see `LineState::holds_atoms`); it is never the
+                            // empty line the guard is against, and holds no atom twice.
                             let fits_hyphen = self.state.line.fits_soft_hyphen(max_advance);
-                            if self.state.line.x != 0.0
+                            if (self.state.line.x != 0.0 || self.state.line.holds_atoms)
                                 && (fits_hyphen || self.state.prev_boundary.is_none())
                             {
                                 self.state.mark_line_break_opportunity();
@@ -1519,7 +1542,12 @@ impl<'a, B: Brush> BreakLines<'a, B> {
                                 spacing,
                                 item.bidi_level.is_rtl(),
                             );
-                            if all_hang || next_x - hanging <= max_advance {
+                            // RINCH (rinch #2944): a zero-advance atom after the line already
+                            // overflows, in text that wraps, stays on it (see
+                            // `LineState::content_wrap`).
+                            let zero_width_hangs = advance == 0.0
+                                && self.state.line.content_wrap == Some(TextWrapMode::Wrap);
+                            if all_hang || zero_width_hangs || next_x - hanging <= max_advance {
                                 if max_height_exceeded {
                                     return self.max_height_break_data(line_height);
                                 }
