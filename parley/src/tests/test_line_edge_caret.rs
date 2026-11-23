@@ -84,3 +84,20 @@ fn text_in_the_paragraphs_own_direction_is_unchanged() {
     ));
     assert_eq!(Cursor::from_point(&layout, WIDTH - 5., 10.).index(), 3);
 }
+
+#[test]
+fn a_mixed_line_takes_the_paragraphs_edges() {
+    // `abc אב` in a right-to-left paragraph: `abc` is at the right, so offset 0 is the line's
+    // right, not the `a`'s left (nor the right of the space before it, visually).
+    let l = layout(BaseDirection::Rtl, "abc \u{5d0}\u{5d1}");
+    assert!(close(caret_x(&l, 0, Affinity::Downstream), WIDTH));
+    // `אב abc`: the end is the line's left.
+    let l = layout(BaseDirection::Rtl, "\u{5d0}\u{5d1} abc");
+    assert!(close(caret_x(&l, 8, Affinity::Upstream), WIDTH - l.width()));
+    // A hard break: the caret before it, downstream, is still on its line's end.
+    let l = layout(BaseDirection::Rtl, "abc\ndef");
+    let line = l.lines().next().unwrap();
+    let left = line.metrics().offset;
+    assert!(close(caret_x(&l, 3, Affinity::Downstream), left));
+    assert!(close(caret_x(&l, 4, Affinity::Downstream), WIDTH));
+}

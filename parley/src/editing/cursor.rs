@@ -279,6 +279,10 @@ impl Cursor {
     ///
     /// The `width` parameter defines the width of the resulting rectangle.
     pub fn geometry<B: Brush>(&self, layout: &Layout<B>, width: f32) -> BoundingBox {
+        // RINCH (rinch #2950): at a line's logical edge, beside text of another direction.
+        if let Some((line, end)) = line_edge_caret(*self, layout) {
+            return line_rect(&line, line_edge_x(&line, end), width);
+        }
         match self.visual_clusters(layout) {
             [Some(left), Some(right)] => {
                 if left.is_end_of_line() {
@@ -394,14 +398,15 @@ fn affinity_for_dir(is_rtl: bool, moving_right: bool) -> Affinity {
 
 fn cursor_rect<B: Brush>(cluster: &Cluster<'_, B>, at_end: bool, size: f32) -> BoundingBox {
     let line = cluster.line();
+    let mut line_x = cluster.visual_offset().unwrap_or_default();
+    if at_end {
+        line_x += cluster.advance();
+    }
+    line_rect(&line, line_x, size)
+}
+
+fn line_rect<B: Brush>(line: &Line<'_, B>, line_x: f32, size: f32) -> BoundingBox {
     let metrics = line.metrics();
-    let line_x = match line_edge_caret(cluster, at_end) {
-        Some(x) => x,
-        None => {
-            let x = cluster.visual_offset().unwrap_or_default();
-            if at_end { x + cluster.advance() } else { x }
-        }
-    };
     BoundingBox::new(
         line_x as f64,
         f32::min(metrics.block_min_coord, metrics.content_block_min_coord) as f64,
@@ -435,27 +440,38 @@ pub(crate) fn line_edge_x<B: Brush>(line: &Line<'_, B>, end: bool) -> f32 {
     }
 }
 
-/// RINCH (rinch #2950): a caret beside `cluster` (on its trailing visual edge when `at_end`) that
-/// stands at its line's logical start or end, where the cluster's bidi level is not the
-/// paragraph's, is drawn at the line's edge in the paragraph's direction, as Blink draws it: in a
-/// right-to-left paragraph a caret before the first letter of `abc` is at the line's right, its
-/// start, not at the `a`'s left, and one after the `c` at the line's left. Where the levels agree
-/// the two are the same place.
-pub(crate) fn line_edge_caret<B: Brush>(cluster: &Cluster<'_, B>, at_end: bool) -> Option<f32> {
-    let line = cluster.line();
-    if cluster.run().bidi_level() == line.base_level() {
-        return None;
+/// RINCH (rinch #2950): the line `cursor` stands at the logical start or end of, and which, when the
+/// text beside it there has a bidi level other than the line's paragraph's. Such a caret is drawn
+/// at the line's edge in the paragraph's direction, as Blink draws it: in a right-to-left paragraph
+/// a caret before the first letter of `abc` (or of `abc אב`) is at the line's right, its start, not
+/// at the `a`'s left, and one after the `c` at its left. Where the levels agree the two are the
+/// same place. A caret at a soft wrap goes by its affinity, as everywhere: upstream it ends the
+/// line above, downstream it starts the line below.
+pub(crate) fn line_edge_caret<'a, B: Brush>(
+    cursor: Cursor,
+    layout: &'a Layout<B>,
+) -> Option<(Line<'a, B>, bool)> {
+    let up = cursor.upstream_cluster(layout);
+    let down = cursor.downstream_cluster(layout);
+    let other_level = |c: &Cluster<'_, B>| c.run().bidi_level() != c.line().base_level();
+    let breaks = |c: &Option<Cluster<'_, B>>| c.as_ref().is_none_or(|c| c.is_hard_line_break());
+    if let Some(d) = &down
+        && !d.is_hard_line_break()
+        && cursor.index == d.line().text_range().start
+        && (cursor.affinity == Affinity::Downstream || breaks(&up))
+        && other_level(d)
+    {
+        return Some((d.line(), false));
     }
-    // The caret is at the cluster's logical start when it is on its leading edge.
-    let at_logical_start = at_end == cluster.is_rtl();
-    let range = cluster.text_range();
-    if at_logical_start && range.start == line.text_range().start {
-        Some(line_edge_x(&line, false))
-    } else if !at_logical_start && range.end == line_content_end(&line) {
-        Some(line_edge_x(&line, true))
-    } else {
-        None
+    if let Some(u) = &up
+        && !u.is_hard_line_break()
+        && cursor.index == line_content_end(&u.line())
+        && (cursor.affinity == Affinity::Upstream || breaks(&down))
+        && other_level(u)
+    {
+        return Some((u.line(), true));
     }
+    None
 }
 
 /// RINCH (rinch #2950): a point on the outer half of the cluster at either visual end of its line
