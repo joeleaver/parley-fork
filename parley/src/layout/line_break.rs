@@ -1781,6 +1781,8 @@ impl<'a, B: Brush> BreakLines<'a, B> {
 
         if line.item_range.is_empty() {
             line.text_range = self.layout.data.text_len..self.layout.data.text_len;
+            // RINCH (rinch #2940): the empty last line after a separator is in its own paragraph.
+            line.base_level = self.layout.data.base_level_at(self.layout.data.text_len);
         }
 
         // Whether metrics should be quantized to pixel boundaries
@@ -2005,10 +2007,13 @@ fn commit_line<B: Brush>(
     let mut text_end = 0;
     // Mark line as needing bidi re-ordering if it contains any runs with non-zero bidi level
     // (zero is the default level, so this is equivalent to marking lines that have multiple levels)
+    // RINCH (rinch #2940): where the line starts in the text, which names its paragraph.
+    let mut line_start = None;
     let mut needs_reorder = false;
     for (i, item) in items_to_commit.iter().enumerate() {
         match item.kind {
             LayoutItemKind::InlineBox => {
+                line_start.get_or_insert(layout.data.inline_boxes[item.index].inline_box.index);
                 lines.line_items.push(LineItemData {
                     kind: LayoutItemKind::InlineBox,
                     index: item.index,
@@ -2064,6 +2069,7 @@ fn commit_line<B: Brush>(
 
                 // Compute the text range for the line
                 // Q: Can we not simplify this computation by assuming that items are in order?
+                line_start.get_or_insert(item_text_range.start);
                 text_start = text_start.min(item_text_range.start);
                 text_end = text_end.max(item_text_range.end);
                 needs_reorder |= shaped_run.bidi_level != BidiLevel::new(0);
@@ -2093,10 +2099,12 @@ fn commit_line<B: Brush>(
     };
     // RINCH (rinch #2594): UAX #9 L1, before the whitespace hangs: it hangs only at the paragraph's
     // level.
-    reset_trailing_whitespace_levels(layout, &mut lines.line_items, start_item_idx);
+    let base_level = line_start.map_or(layout.data.base_level, |at| layout.data.base_level_at(at));
+    reset_trailing_whitespace_levels(layout, base_level, &mut lines.line_items, start_item_idx);
     let end_item_idx = lines.line_items.len();
     let (hanging_advance, justification_end_cluster, hanging_opportunities) = hanging_whitespace(
         layout,
+        base_level,
         &lines.line_items[start_item_idx..end_item_idx],
         overflow,
     );
@@ -2112,6 +2120,7 @@ fn commit_line<B: Brush>(
 
     lines.lines.push(LineData {
         item_range: start_item_idx..end_item_idx,
+        base_level,
         text_range: text_start..text_end,
         max_advance,
         break_reason,
@@ -2170,6 +2179,7 @@ fn commit_line<B: Brush>(
 #[inline(never)]
 fn hanging_whitespace<B: Brush>(
     layout: &Layout<B>,
+    base_level: BidiLevel,
     line_items: &[LineItemData],
     overflow: f32,
 ) -> (f32, u32, u32) {
@@ -2204,7 +2214,7 @@ fn hanging_whitespace<B: Brush>(
                 // reordering. RINCH (rinch #2594): `reset_trailing_whitespace_levels` (UAX #9 L1)
                 // has put the line's trailing whitespace at the paragraph's level, so an item at
                 // another level ends in something that is not whitespace.
-                if line_item.bidi_level != layout.data.base_level {
+                if line_item.bidi_level != base_level {
                     break;
                 }
 
@@ -2283,10 +2293,10 @@ fn hanging_whitespace<B: Brush>(
 /// rather than at the Hebrew's visual left, inside the line; Chrome applies L1 too.
 fn reset_trailing_whitespace_levels<B: Brush>(
     layout: &Layout<B>,
+    base: BidiLevel,
     line_items: &mut Vec<LineItemData>,
     start: usize,
 ) {
-    let base = layout.data.base_level;
     let shaped_text = &layout.data.shaped_text;
     let trailing = |atom: &Atom<'_>| match atom.characters()[0].whitespace {
         Whitespace::Space

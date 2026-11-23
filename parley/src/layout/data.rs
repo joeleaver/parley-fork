@@ -85,6 +85,8 @@ pub(crate) struct LineData {
     pub(crate) text_range: Range<usize>,
     /// Range of line items.
     pub(crate) item_range: Range<usize>,
+    /// RINCH (rinch #2940): the base level of the paragraph the line is in.
+    pub(crate) base_level: BidiLevel,
     /// Metrics for the line.
     pub(crate) metrics: LineMetrics,
     /// The cause of the line break.
@@ -213,8 +215,12 @@ pub(crate) struct LayoutData<B: Brush> {
     pub(crate) scale: f32,
     /// Whether metrics should be quantized to pixel boundaries
     pub(crate) quantize: bool,
-    /// The `BiDi` base level
+    /// The `BiDi` base level (the first paragraph's)
     pub(crate) base_level: BidiLevel,
+    /// RINCH (rinch #2940): each paragraph after the first, as the byte index it starts at and its
+    /// base level ([`parley_engine::Analysis::paragraphs`]); empty when every paragraph is at
+    /// [`Self::base_level`].
+    pub(crate) paragraphs: Vec<(usize, BidiLevel)>,
     /// The length of the text in the layout
     pub(crate) text_len: usize,
 
@@ -268,6 +274,7 @@ impl<B: Brush> Default for LayoutData<B> {
             scale: 1.,
             quantize: true,
             base_level: BidiLevel::new(0),
+            paragraphs: Vec::new(),
             text_len: 0,
             width: 0.,
             full_width: 0.,
@@ -292,10 +299,22 @@ impl<B: Brush> Default for LayoutData<B> {
 }
 
 impl<B: Brush> LayoutData<B> {
+    /// RINCH (rinch #2940): the base level of the paragraph the text at byte `index` is in.
+    pub(crate) fn base_level_at(&self, index: usize) -> BidiLevel {
+        match self
+            .paragraphs
+            .partition_point(|&(start, _)| start <= index)
+        {
+            0 => self.base_level,
+            n => self.paragraphs[n - 1].1,
+        }
+    }
+
     pub(crate) fn clear(&mut self) {
         self.scale = 1.;
         self.quantize = true;
         self.base_level = BidiLevel::new(0);
+        self.paragraphs.clear();
         self.text_len = 0;
         self.width = 0.;
         self.full_width = 0.;

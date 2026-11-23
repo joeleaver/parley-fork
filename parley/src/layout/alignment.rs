@@ -73,10 +73,10 @@ pub(crate) fn align<B: Brush>(
 ) {
     layout.alignment = Some(alignment);
 
-    let is_rtl = layout.base_level.is_rtl();
-
     // Apply alignment to line items
     for line in &mut layout.lines {
+        // RINCH (rinch #2940): each line by its own paragraph's direction.
+        let is_rtl = line.base_level.is_rtl();
         line.justification.amount_per_opportunity = 0.;
 
         let indent = line.metrics.indent;

@@ -5,6 +5,8 @@ mod test_analysis;
 mod test_builders;
 mod test_inline_box_bidi;
 mod test_ligature_break;
+mod test_line_edge_caret;
+mod test_plaintext_paragraphs;
 mod test_soft_hyphen;
 mod test_style_metrics;
 mod utils;

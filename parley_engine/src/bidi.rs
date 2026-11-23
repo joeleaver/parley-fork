@@ -19,6 +19,8 @@ pub(crate) struct BidiResolver {
     runs: Vec<Run>,
     indices: Vec<usize>,
     flags: u16,
+    /// RINCH (rinch #2940): see [`Self::paragraphs`].
+    paragraphs: Vec<(usize, BidiLevel)>,
 }
 
 impl core::fmt::Debug for BidiResolver {
@@ -47,9 +49,78 @@ impl BidiResolver {
         self.base_level = BidiLevel::new(0);
     }
 
-    /// Resolves a paragraph with the specified base direction and
-    /// precomputed types.
+    /// Resolves the text with the specified base direction and precomputed
+    /// types.
+    ///
+    /// RINCH (rinch #2940): under [`BaseDirection::Auto`] each paragraph (UAX #9
+    /// P1: the text up to and including a paragraph separator, class B, with
+    /// CR LF one separator) is resolved on its own, its base level from its own
+    /// first strong character (P2, P3), and [`Self::paragraphs`] lists them. As
+    /// CSS `unicode-bidi: plaintext` asks, and as Blink does. Under an explicit
+    /// direction the text is still one paragraph, every embedding running across
+    /// a separator.
     pub(crate) fn resolve(
+        &mut self,
+        chars: impl Iterator<Item = (char, (BidiClass, BidiMirroringGlyph))>,
+        base_direction: BaseDirection,
+    ) {
+        if base_direction != BaseDirection::Auto {
+            self.resolve_paragraph(chars, base_direction);
+            self.paragraphs.clear();
+            self.paragraphs.push((0, self.base_level));
+            return;
+        }
+        let chars: Vec<_> = chars.collect();
+        // The end of each paragraph, one past its separator.
+        let mut ends = Vec::new();
+        for (i, &(ch, (t, _))) in chars.iter().enumerate() {
+            let crlf = ch == '\r' && chars.get(i + 1).is_some_and(|&(next, _)| next == '\n');
+            if t == BidiClass::ParagraphSeparator && !crlf {
+                ends.push(i + 1);
+            }
+        }
+        if ends.last() != Some(&chars.len()) {
+            ends.push(chars.len());
+        }
+        // A separator at the end leaves an empty last paragraph, which has no
+        // strong character: left to right (P3).
+        let empty_last = chars
+            .last()
+            .is_some_and(|&(_, (t, _))| t == BidiClass::ParagraphSeparator);
+        if ends.len() == 1 && !empty_last {
+            self.resolve_paragraph(chars.into_iter(), base_direction);
+            self.paragraphs.clear();
+            self.paragraphs.push((0, self.base_level));
+            return;
+        }
+        let mut levels = Vec::with_capacity(chars.len());
+        let mut paragraphs = Vec::with_capacity(ends.len() + 1);
+        let mut start = 0;
+        for end in ends {
+            self.resolve_paragraph(chars[start..end].iter().copied(), base_direction);
+            paragraphs.push((start, self.base_level));
+            levels.extend_from_slice(&self.levels);
+            start = end;
+        }
+        if empty_last {
+            paragraphs.push((chars.len(), BidiLevel::new(0)));
+        }
+        self.base_level = paragraphs[0].1;
+        self.levels = levels;
+        self.paragraphs = paragraphs;
+    }
+
+    /// RINCH (rinch #2940): each paragraph [`Self::resolve`] found, as the index
+    /// of its first character (in the order the characters were given) and its
+    /// base level, in order; the first starts at 0. A text that ends in a
+    /// paragraph separator has an empty last paragraph at its length.
+    pub(crate) fn paragraphs(&self) -> &[(usize, BidiLevel)] {
+        &self.paragraphs
+    }
+
+    /// Resolves one paragraph with the specified base direction and
+    /// precomputed types.
+    fn resolve_paragraph(
         &mut self,
         chars: impl Iterator<Item = (char, (BidiClass, BidiMirroringGlyph))>,
         base_direction: BaseDirection,

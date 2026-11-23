@@ -190,4 +190,27 @@ mod tests {
         assert!(analysis.paragraph_level().is_rtl());
         assert!(analysis.bidi_levels().is_empty());
     }
+
+    // RINCH (rinch #2940): each paragraph its own base level under `Auto`, by byte index.
+    #[test]
+    fn auto_resolves_each_paragraph_on_its_own() {
+        let analysis = analyze("\u{5d0}\nabc\r\n\u{5d1} x\n", BaseDirection::Auto);
+        assert!(analysis.paragraph_level().is_rtl());
+        let rtl: alloc::vec::Vec<(usize, bool)> = analysis
+            .paragraphs()
+            .iter()
+            .map(|&(at, level)| (at, level.is_rtl()))
+            .collect();
+        assert_eq!(rtl, [(3, false), (8, true), (13, false)]);
+        // `abc` is left to right in its own paragraph, not embedded in the first's.
+        assert!(
+            analysis.bidi_levels()[3..6]
+                .iter()
+                .all(|l| *l == BidiLevel::new(0))
+        );
+
+        // An explicit direction is every paragraph's.
+        let ltr = analyze("\u{5d0}\nabc", BaseDirection::Ltr);
+        assert!(ltr.paragraphs().is_empty());
+    }
 }
