@@ -158,6 +158,14 @@ impl<'a, B: Brush> Run<'a, B> {
         self.shaped.bidi_level.is_rtl()
     }
 
+    /// RINCH (rinch #2950): the run's resolved bidi level on its line: the level it was reordered
+    /// by (a line's trailing whitespace is at its paragraph's, UAX #9 L1, though shaped with the
+    /// text before it).
+    pub fn bidi_level(&self) -> parlance::BidiLevel {
+        self.line_data
+            .map_or(self.shaped.bidi_level, |item| item.bidi_level)
+    }
+
     /// Returns the cluster range for the run.
     ///
     /// The indices are grapheme cluster indices, relative to the shaped run this [`Run`] belongs

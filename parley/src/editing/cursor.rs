@@ -38,7 +38,9 @@ impl Cursor {
     pub fn from_point<B: Brush>(layout: &Layout<B>, x: f32, y: f32) -> Self {
         let (index, affinity) = if let Some((cluster, side)) = Cluster::from_point(layout, x, y) {
             let is_leading = side == ClusterSide::Left;
-            if cluster.is_rtl() {
+            if let Some(at) = line_edge_hit(&cluster, side) {
+                at
+            } else if cluster.is_rtl() {
                 if is_leading {
                     (cluster.text_range().end, Affinity::Upstream)
                 } else {
@@ -391,18 +393,94 @@ fn affinity_for_dir(is_rtl: bool, moving_right: bool) -> Affinity {
 }
 
 fn cursor_rect<B: Brush>(cluster: &Cluster<'_, B>, at_end: bool, size: f32) -> BoundingBox {
-    let mut line_x = cluster.visual_offset().unwrap_or_default();
-    if at_end {
-        line_x += cluster.advance();
-    }
     let line = cluster.line();
     let metrics = line.metrics();
+    let line_x = match line_edge_caret(cluster, at_end) {
+        Some(x) => x,
+        None => {
+            let x = cluster.visual_offset().unwrap_or_default();
+            if at_end { x + cluster.advance() } else { x }
+        }
+    };
     BoundingBox::new(
         line_x as f64,
         f32::min(metrics.block_min_coord, metrics.content_block_min_coord) as f64,
         (line_x + size) as f64,
         f32::max(metrics.block_max_coord, metrics.content_block_max_coord) as f64,
     )
+}
+
+/// RINCH (rinch #2950): the end of `line`'s text before the hard break that ends it, if one does.
+pub(crate) fn line_content_end<B: Brush>(line: &Line<'_, B>) -> usize {
+    let range = line.text_range();
+    if line.break_reason() == BreakReason::Explicit
+        && range.end > range.start
+        && let Some(cluster) = Cluster::from_byte_index(line.layout, range.end - 1)
+        && cluster.is_hard_line_break()
+    {
+        return cluster.text_range().start.max(range.start);
+    }
+    range.end
+}
+
+/// RINCH (rinch #2950): `line`'s visual start or end edge (`end`) in its paragraph's direction:
+/// where the line's content begins or ends, excluding whitespace that hangs.
+pub(crate) fn line_edge_x<B: Brush>(line: &Line<'_, B>, end: bool) -> f32 {
+    let m = line.metrics();
+    match (line.is_rtl(), end) {
+        (false, false) => m.offset,
+        (false, true) => m.offset + m.advance - m.hanging_advance,
+        (true, false) => m.offset + m.advance,
+        (true, true) => m.offset + m.hanging_advance,
+    }
+}
+
+/// RINCH (rinch #2950): a caret beside `cluster` (on its trailing visual edge when `at_end`) that
+/// stands at its line's logical start or end, where the cluster's bidi level is not the
+/// paragraph's, is drawn at the line's edge in the paragraph's direction, as Blink draws it: in a
+/// right-to-left paragraph a caret before the first letter of `abc` is at the line's right, its
+/// start, not at the `a`'s left, and one after the `c` at the line's left. Where the levels agree
+/// the two are the same place.
+pub(crate) fn line_edge_caret<B: Brush>(cluster: &Cluster<'_, B>, at_end: bool) -> Option<f32> {
+    let line = cluster.line();
+    if cluster.run().bidi_level() == line.base_level() {
+        return None;
+    }
+    // The caret is at the cluster's logical start when it is on its leading edge.
+    let at_logical_start = at_end == cluster.is_rtl();
+    let range = cluster.text_range();
+    if at_logical_start && range.start == line.text_range().start {
+        Some(line_edge_x(&line, false))
+    } else if !at_logical_start && range.end == line_content_end(&line) {
+        Some(line_edge_x(&line, true))
+    } else {
+        None
+    }
+}
+
+/// RINCH (rinch #2950): a point on the outer half of the cluster at either visual end of its line
+/// (or past it), where the cluster's bidi level is not the paragraph's, is the line's logical start
+/// or end — the position [`line_edge_caret`] draws at that edge — as in Blink: left of `abc` in a
+/// right-to-left paragraph is after the `c`, and on the `c`'s right half is before the `a`.
+pub fn line_edge_hit<B: Brush>(
+    cluster: &Cluster<'_, B>,
+    side: ClusterSide,
+) -> Option<(usize, Affinity)> {
+    let line = cluster.line();
+    if cluster.run().bidi_level() == line.base_level() {
+        return None;
+    }
+    let left_edge = match side {
+        ClusterSide::Left if cluster.is_start_of_line() => true,
+        ClusterSide::Right if cluster.is_end_of_line() => false,
+        _ => return None,
+    };
+    // The left edge is the line's start in a left-to-right paragraph, its end in a right-to-left one.
+    Some(if left_edge != line.is_rtl() {
+        (line.text_range().start, Affinity::Downstream)
+    } else {
+        (line_content_end(&line), Affinity::Upstream)
+    })
 }
 
 fn last_line_cursor_rect<B: Brush>(layout: &Layout<B>, size: f32) -> BoundingBox {
