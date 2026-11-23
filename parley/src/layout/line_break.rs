@@ -108,12 +108,12 @@ struct LineState {
     /// a 1px box as an empty line, then `aaaa`.
     holds_atoms: bool,
 
-    /// RINCH (rinch #2944): the wrap mode of the last atom with an advance appended to the line,
-    /// `None` before one. A zero-advance atom after a soft wrap opportunity on a line that already
-    /// overflows is kept on the line when this text wraps (it fits as hanging content), and starts
-    /// the next line when it does not: Chrome 158 lays `aaaa<wbr><wbr>bbbb` out in 1px as `aaaa` /
-    /// `bbbb` under `white-space: normal`, and as `aaaa` / an empty line / `bbbb` under `nowrap`.
-    content_wrap: Option<TextWrapMode>,
+    /// RINCH (rinch #2944): whether the line starts after a soft wrap (a `Regular` or `Emergency`
+    /// break). Such a line that holds only zero-advance atoms ends at an opportunity only before
+    /// text that does not wrap: Chrome 158 lays `aaaa<wbr><wbr>bbbb` out in 1px as `aaaa` / an
+    /// empty line / `bbbb` under `white-space: nowrap`, but `aaaa <wbr> bbbb` and
+    /// `aaaa<wbr><wbr>bbbb` as two lines under `normal`.
+    after_soft_break: bool,
 }
 
 impl LineState {
@@ -126,7 +126,7 @@ impl LineState {
         self.soft_hyphen_hang = 0.0;
         self.ligature_end = None;
         self.holds_atoms = false;
-        self.content_wrap = None;
+        self.after_soft_break = false;
     }
 
     /// RINCH (rinch #2614): whether the line, ended here, fits `max_advance` with the hyphen it
@@ -748,9 +748,6 @@ impl BreakerState {
             .map(|(_, delta)| delta);
         let x = core::mem::replace(&mut self.line.x, next_x);
         self.line.holds_atoms = true;
-        if next_x != x {
-            self.line.content_wrap = Some(data.styles[usize::from(style_index)].text_wrap_mode);
-        }
         self.line.num_word_separators += u32::from(is_word_separator);
         if let Some(i) = data.soft_hyphen_at(atom.shaped_clusters_range().start) {
             self.line.soft_hyphen = Some(data.soft_hyphens[i].hyphen.advance);
@@ -1080,6 +1077,9 @@ impl<'a, B: Brush> BreakLines<'a, B> {
         // trailing line after a final newline), so use the returned height.
         let line_height = self.finish_line(self.lines.lines.len() - 1, line_height, invisible);
         self.reset_line();
+        // RINCH (rinch #2944): see `LineState::after_soft_break`.
+        self.state.line.after_soft_break =
+            matches!(reason, BreakReason::Regular | BreakReason::Emergency);
 
         self.state.line_y += line_height as f64;
 
@@ -1471,9 +1471,14 @@ impl<'a, B: Brush> BreakLines<'a, B> {
                             //
                             // RINCH (rinch #2944): a line that holds only zero-advance atoms has
                             // content to end too (see `LineState::holds_atoms`); it is never the
-                            // empty line the guard is against, and holds no atom twice.
+                            // empty line the guard is against, and holds no atom twice. After a
+                            // soft wrap, only before text that does not wrap
+                            // (`LineState::after_soft_break`).
+                            let holds = self.state.line.holds_atoms
+                                && (!self.state.line.after_soft_break
+                                    || style.text_wrap_mode != TextWrapMode::Wrap);
                             let fits_hyphen = self.state.line.fits_soft_hyphen(max_advance);
-                            if (self.state.line.x != 0.0 || self.state.line.holds_atoms)
+                            if (self.state.line.x != 0.0 || holds)
                                 && (fits_hyphen || self.state.prev_boundary.is_none())
                             {
                                 self.state.mark_line_break_opportunity();
@@ -1542,12 +1547,7 @@ impl<'a, B: Brush> BreakLines<'a, B> {
                                 spacing,
                                 item.bidi_level.is_rtl(),
                             );
-                            // RINCH (rinch #2944): a zero-advance atom after the line already
-                            // overflows, in text that wraps, stays on it (see
-                            // `LineState::content_wrap`).
-                            let zero_width_hangs = advance == 0.0
-                                && self.state.line.content_wrap == Some(TextWrapMode::Wrap);
-                            if all_hang || zero_width_hangs || next_x - hanging <= max_advance {
+                            if all_hang || next_x - hanging <= max_advance {
                                 if max_height_exceeded {
                                     return self.max_height_break_data(line_height);
                                 }
