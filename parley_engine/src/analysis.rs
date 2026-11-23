@@ -49,6 +49,9 @@ pub struct Analysis {
     /// RINCH (rinch #2588): the bidi level of each inline box of
     /// [`AnalysisOptions::inline_boxes`], in its order.
     pub(crate) box_levels: Vec<BidiLevel>,
+
+    /// RINCH (rinch #2940): see [`Analysis::paragraphs`].
+    pub(crate) paragraphs: Vec<(usize, BidiLevel)>,
 }
 
 impl Analysis {
@@ -66,6 +69,7 @@ impl Analysis {
         self.levels.clear();
         self.box_levels.clear();
         self.paragraph_level = BidiLevel::new(0);
+        self.paragraphs.clear();
     }
 
     /// The per-character info in source order.
@@ -94,6 +98,18 @@ impl Analysis {
     #[inline(always)]
     pub fn inline_box_levels(&self) -> &[BidiLevel] {
         &self.box_levels
+    }
+
+    /// RINCH (rinch #2940): each paragraph after the first, as the byte index it starts at and its
+    /// base level, in order. Under [`BaseDirection::Auto`] each paragraph (the text up to and
+    /// including a paragraph separator, UAX #9 P1) takes its base level from its own first strong
+    /// character, as CSS `unicode-bidi: plaintext` asks; a text that ends in a separator has an
+    /// empty last paragraph at its length, left to right. Empty under an explicit direction, for
+    /// one paragraph, and for text with nothing right to left in it (every paragraph is then left
+    /// to right). [`Self::paragraph_level`] is the first paragraph's.
+    #[inline(always)]
+    pub fn paragraphs(&self) -> &[(usize, BidiLevel)] {
+        &self.paragraphs
     }
 }
 
@@ -874,6 +890,22 @@ pub(crate) fn analyze_text(
                 options.base_direction,
             );
             core::mem::swap(&mut analysis.levels, &mut analyzer.bidi.levels);
+            // RINCH (rinch #2940): the paragraphs after the first, by byte index.
+            let paragraphs = analyzer.bidi.paragraphs();
+            if paragraphs.len() > 1 {
+                let mut next = 1;
+                for (index, (at, _)) in text.char_indices().enumerate() {
+                    if next < paragraphs.len() && paragraphs[next].0 == index {
+                        analysis.paragraphs.push((at, paragraphs[next].1));
+                        next += 1;
+                    }
+                }
+                analysis.paragraphs.extend(
+                    paragraphs[next..]
+                        .iter()
+                        .map(|&(_, level)| (text.len(), level)),
+                );
+            }
         } else {
             // RINCH (rinch #2588): each inline box is an object replacement character at its
             // index, resolved with the text and then taken out of it.
@@ -906,17 +938,36 @@ pub(crate) fn analyze_text(
             let mut level = analyzer.bidi.levels.iter().copied();
             let mut next_box = 0;
             analysis.levels.clear();
+            // RINCH (rinch #2940): the paragraphs after the first, by byte index: a paragraph
+            // that starts with a box starts at the box's index.
+            let paragraphs = analyzer.bidi.paragraphs();
+            let mut next_paragraph = 1;
+            let mut merged = 0;
+            let mut paragraph_at = |at: usize, merged: usize| {
+                if next_paragraph < paragraphs.len() && paragraphs[next_paragraph].0 == merged {
+                    analysis.paragraphs.push((at, paragraphs[next_paragraph].1));
+                    next_paragraph += 1;
+                }
+            };
             for (at, _) in text.char_indices() {
                 while next_box < boxes.len() && boxes[next_box] <= at {
+                    paragraph_at(at, merged);
+                    merged += 1;
                     analysis.box_levels.extend(level.next());
                     next_box += 1;
                 }
+                paragraph_at(at, merged);
+                merged += 1;
                 analysis.levels.extend(level.next());
             }
             while next_box < boxes.len() && boxes[next_box] <= text.len() {
+                paragraph_at(text.len(), merged);
+                merged += 1;
                 analysis.box_levels.extend(level.next());
                 next_box += 1;
             }
+            // An empty last paragraph, after a separator at the end.
+            paragraph_at(text.len(), merged);
         }
         analysis.paragraph_level = analyzer.bidi.base_level();
     }

@@ -31,6 +31,19 @@ impl<'a, B: Brush> Line<'a, B> {
         self.data.break_reason
     }
 
+    /// RINCH (rinch #2940): the base bidi level of the paragraph the line is in. A layout built
+    /// with [`BaseDirection::Auto`](crate::BaseDirection::Auto) gives each paragraph its own, from
+    /// its first strong character; otherwise every line has the layout's.
+    pub fn base_level(&self) -> parlance::BidiLevel {
+        self.data.base_level
+    }
+
+    /// RINCH (rinch #2940): whether the paragraph the line is in runs right to left: the side
+    /// its start alignment and hanging whitespace are on ([`Self::base_level`] is odd).
+    pub fn is_rtl(&self) -> bool {
+        self.data.base_level.is_rtl()
+    }
+
     /// Returns the range of text for the line.
     pub fn text_range(&self) -> Range<usize> {
         self.data.text_range.clone()
