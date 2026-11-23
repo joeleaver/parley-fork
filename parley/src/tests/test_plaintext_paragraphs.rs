@@ -121,3 +121,41 @@ fn an_explicit_direction_is_every_paragraphs() {
         (vec![false, false], vec![0.])
     );
 }
+
+// RINCH (rinch #2962): under an explicit direction the paragraphs are resolved on their own too,
+// each at that direction: a neutral that starts one takes the block's direction, not the strong
+// text's before the separator.
+#[test]
+fn an_explicit_directions_paragraphs_are_resolved_on_their_own() {
+    assert_eq!(
+        lay_out(BaseDirection::Rtl, &[Some("abc\n"), None, Some("abc")]),
+        (vec![true, true], vec![WIDTH - 10.])
+    );
+    assert_eq!(
+        lay_out(BaseDirection::Ltr, &[Some("א\n"), None, Some("א")]),
+        (vec![false, false], vec![0.])
+    );
+}
+
+// RINCH (rinch #2962): an embedding open at a separator is reopened after it, so it runs across:
+// the second line's box and ` d` stay left to right inside the right-to-left line, the box first.
+#[test]
+fn an_embedding_runs_across_a_separator() {
+    let (_, xs) = lay_out(
+        BaseDirection::Rtl,
+        &[Some("\u{202a}abc\n"), None, Some(" d\u{202c}")],
+    );
+    assert!(xs[0] < WIDTH - 10. - 1., "{xs:?}");
+    // An isolate too.
+    let (_, xs) = lay_out(
+        BaseDirection::Rtl,
+        &[Some("\u{2066}abc\n"), None, Some(" d\u{2069}")],
+    );
+    assert!(xs[0] < WIDTH - 10. - 1., "{xs:?}");
+    // Closed before the separator, it is not reopened: the box is at the right.
+    let (_, xs) = lay_out(
+        BaseDirection::Rtl,
+        &[Some("\u{202a}abc\u{202c}\n"), None, Some(" d")],
+    );
+    assert_eq!(xs, vec![WIDTH - 10.]);
+}
