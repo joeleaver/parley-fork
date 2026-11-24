@@ -1028,6 +1028,13 @@ impl<'a, B: Brush> BreakLines<'a, B> {
             done: false,
         };
         this.reset_line();
+        // RINCH (rinch #2944): the content before the paragraph's first item is none: the
+        // opportunity after an inline box that starts it is the root's to give, with the box's
+        // own parent (Chrome 158 keeps `<div style="white-space:nowrap"><inline-block>bbbb</div>`
+        // on one line in 1px). It was `Wrap` whatever the root.
+        if let Some(root) = this.layout.data.styles.first() {
+            this.state.line.text_wrap_mode = root.text_wrap_mode;
+        }
         this
     }
 
@@ -1517,11 +1524,6 @@ impl<'a, B: Brush> BreakLines<'a, B> {
                         let wbr_stays = style
                             .wbr
                             .is_some_and(|own| self.state.line.overflow.wbr_stays(own));
-                        // RINCH (rinch #2944): Blink retries a line that overflows with no
-                        // opportunity, under `overflow-wrap: anywhere | break-word`, breaking
-                        // anywhere, which puts one before a `<wbr>`: Chrome 158 lays
-                        // `<nowrap>aaaa</nowrap><wbr nowrap><wbr>bbbb` out in 1px under
-                        // `overflow-wrap: anywhere` with an empty line after `aaaa`.
                         // RINCH (rinch #2944): see `LineState::ends_after_box`.
                         if self.state.line.ends_after_box
                             && !wbr_stays
@@ -1534,8 +1536,6 @@ impl<'a, B: Brush> BreakLines<'a, B> {
                                 line_indent,
                             );
                         }
-                        let wbr_starts_line = style.wbr == Some(TextWrapMode::NoWrap)
-                            && self.state.line.overflow == Overflow::Unnoticed;
 
                         // Take mandatory line breaks before checking for line wrapping.
                         if is_newline {
@@ -1578,7 +1578,7 @@ impl<'a, B: Brush> BreakLines<'a, B> {
                         } else if
                         // This text can contribute "emergency" line breaks.
                         style.overflow_wrap != OverflowWrap::Normal
-                        && (text_wrap_mode == TextWrapMode::Wrap || wbr_starts_line)
+                        && text_wrap_mode == TextWrapMode::Wrap
                         // If we're at the start of the line, this particular atom will never fit, so it's not a valid emergency break opportunity.
                         && self.state.line.x != 0.0
                         // RINCH (rinch #2944): see `wbr_stays`.

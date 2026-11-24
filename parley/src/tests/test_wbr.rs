@@ -276,29 +276,47 @@ fn nothing_but_wbrs_stays_after_a_box_that_overflows_at_the_line_start() {
 }
 
 #[test]
-fn overflow_wrap_breaks_before_a_wbr_that_does_not_wrap() {
-    // Under `overflow-wrap: anywhere`, Blink retries a line that overflows with no opportunity by
-    // breaking anywhere, which puts one before a first `<wbr>` that does not wrap: the line
-    // after `aaaa` holds both `<wbr>`s.
-    let anywhere = |pieces: &[Piece]| lines(WRAP, OverflowWrap::Anywhere, pieces);
-    assert_eq!(
-        anywhere(&[
+fn overflow_wrap_gives_text_that_does_not_wrap_no_opportunity_before_a_wbr() {
+    // `overflow-wrap` has no effect on text that does not wrap, nor so on the `<wbr>`s after it:
+    // Chrome 158 lays `aaaa<wbr>bbbb` out in 1px as two lines, under `white-space: nowrap` and
+    // `overflow-wrap: anywhere` alike, and `aaaa<wbr><wbr>bbbb` as three, as without
+    // `overflow-wrap`.
+    //
+    // (Chrome breaks at the end of an element, under `overflow-wrap`, where the element's parent
+    // wraps: `<nowrap>aaaa</nowrap><wbr nowrap>bbbb` has an empty line after `aaaa` in a root
+    // that wraps. These pieces have no such end; parley sees no element's (rinch #2996).)
+    for overflow_wrap in [OverflowWrap::Anywhere, OverflowWrap::BreakWord] {
+        let one = [Text("aaaa", NOWRAP), Wbr(NOWRAP), Text("bbbb", NOWRAP)];
+        let two = [
             Text("aaaa", NOWRAP),
             Wbr(NOWRAP),
-            Wbr(WRAP),
-            Text("bbbb", WRAP)
-        ]),
-        ["aaaa", "^^", "b", "b", "b", "b"]
+            Wbr(NOWRAP),
+            Text("bbbb", NOWRAP),
+        ];
+        for root in [NOWRAP, WRAP] {
+            assert_eq!(lines(root, overflow_wrap, &one), ["aaaa^", "bbbb"]);
+        }
+        assert_eq!(lines(NOWRAP, overflow_wrap, &two), ["aaaa^", "^", "bbbb"]);
+    }
+}
+
+#[test]
+fn a_box_that_starts_a_root_that_does_not_wrap_does_not_end_the_line() {
+    // The opportunity after a box that starts the paragraph is the root's and the box's parent's
+    // to give: Chrome 158 lays an inline-block and `bbbb` out on one line in 1px under
+    // `white-space: nowrap`, and a `<wbr>` between them gives the line its end.
+    assert_eq!(
+        normal(NOWRAP, &[Atomic(NOWRAP), Text("bbbb", NOWRAP)]),
+        ["bbbb"]
     );
-    // A first `<wbr>` that wraps stays on the line, and a second that does not starts the next.
     assert_eq!(
-        anywhere(&[
-            Text("aaaa", NOWRAP),
-            Wbr(WRAP),
-            Wbr(NOWRAP),
-            Text("bbbb", WRAP)
-        ]),
-        ["aaaa^", "^", "b", "b", "b", "b"]
+        normal(NOWRAP, &[Atomic(NOWRAP), Wbr(NOWRAP), Text("bbbb", NOWRAP)]),
+        ["^", "bbbb"]
+    );
+    // In a root that wraps, the line ends right after the box.
+    assert_eq!(
+        normal(WRAP, &[Atomic(NOWRAP), Text("bbbb", NOWRAP)]),
+        ["", "bbbb"]
     );
 }
 
