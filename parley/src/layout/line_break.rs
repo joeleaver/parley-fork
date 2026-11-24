@@ -111,6 +111,13 @@ struct LineState {
     /// RINCH (rinch #2944): whether content that does not fit has been appended to the line, and
     /// if so which way Chrome would end the line ([`Overflow`]).
     overflow: Overflow,
+
+    /// RINCH (rinch #2944): whether the line ends at the opportunity after the inline box that
+    /// overflowed it at its start, before anything but a `<wbr>` that stays on it
+    /// ([`Overflow::wbr_stays`]). Chrome 158 keeps such `<wbr>`s on the box's line, but nothing
+    /// else, not even white space that would hang: `x <inline-block 300px>  \n` under
+    /// `white-space: pre-wrap` gives the spaces and the newline a line of their own.
+    ends_after_box: bool,
 }
 
 /// RINCH (rinch #2944): whether a line already overflows, and if it does, which `<wbr>`s after
@@ -183,6 +190,7 @@ impl LineState {
         self.ligature_end = None;
         self.holds_atoms = false;
         self.overflow = Overflow::None;
+        self.ends_after_box = false;
     }
 
     /// RINCH (rinch #2614): whether the line, ended here, fits `max_advance` with the hyphen it
@@ -1443,9 +1451,8 @@ impl<'a, B: Brush> BreakLines<'a, B> {
                     // then simply move on to the next item.
                     //
                     // RINCH (rinch #2944): a box that overflows at the start of a line does not end
-                    // the line at once. The line ends at the opportunity after it, which the next
-                    // content that does not fit breaks at, as Blink's line breaker does: what can
-                    // hang or stay after the box stays on its line (the `<wbr>`s of `Overflow`).
+                    // the line at once: the `<wbr>`s after it that stay on an overflowing line
+                    // (`Overflow`) go on its line first (`LineState::ends_after_box`).
                     if next_x <= max_advance
                         || self.state.line.x == 0.0
                         || (self.state.line.text_wrap_mode != TextWrapMode::Wrap && !box_wraps)
@@ -1459,6 +1466,7 @@ impl<'a, B: Brush> BreakLines<'a, B> {
                             self.state.line.overflow =
                                 self.state.line.overflow.after_overflowing(false);
                         }
+                        self.state.line.ends_after_box = breaks_after;
                         self.append_layout_inline_box(item.index, next_x);
 
                         // There is a soft wrap opportunity after an inline box, unless wrapping
@@ -1514,6 +1522,17 @@ impl<'a, B: Brush> BreakLines<'a, B> {
                         // anywhere, which puts one before a `<wbr>`: Chrome 158 lays
                         // `<nowrap>aaaa</nowrap><wbr nowrap><wbr>bbbb` out in 1px under
                         // `overflow-wrap: anywhere` with an empty line after `aaaa`.
+                        // RINCH (rinch #2944): see `LineState::ends_after_box`.
+                        if self.state.line.ends_after_box && !wbr_stays {
+                            if let Some(prev) = self.state.prev_boundary.take() {
+                                self.state.reset_to(prev);
+                                return self.start_new_line(
+                                    BreakReason::Emergency,
+                                    max_advance,
+                                    line_indent,
+                                );
+                            }
+                        }
                         let wbr_starts_line = style.wbr == Some(TextWrapMode::NoWrap)
                             && self.state.line.overflow == Overflow::Unnoticed;
 

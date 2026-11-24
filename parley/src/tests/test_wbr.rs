@@ -16,7 +16,7 @@ use super::utils::ColorBrush;
 use super::utils::fonts::{FONT_FAMILY_LIST, create_font_context};
 use crate::{
     FontFamily, InlineBox, InlineBoxKind, Layout, LayoutContext, LineBreakContext, LineHeight,
-    OverflowWrap, StyleProperty, TextStyle, TextWrapMode, VerticalAlign,
+    OverflowWrap, StyleProperty, TextStyle, TextWrapMode, VerticalAlign, WhiteSpaceCollapse,
 };
 
 const WRAP: TextWrapMode = TextWrapMode::Wrap;
@@ -45,14 +45,40 @@ fn chrome_breaks(cx: LineBreakContext) -> Option<bool> {
 
 /// `pieces` in a root of `root` wrap mode and `overflow_wrap`.
 fn build(root: TextWrapMode, overflow_wrap: OverflowWrap, pieces: &[Piece]) -> Layout<ColorBrush> {
-    let style = TextStyle {
+    build_styled(
+        TextStyle {
+            text_wrap_mode: root,
+            overflow_wrap,
+            ..root_style()
+        },
+        pieces,
+    )
+}
+
+/// `pieces` in a root that wraps and preserves white space (`white-space: pre-wrap`).
+fn build_preserving(pieces: &[Piece]) -> Layout<ColorBrush> {
+    build_styled(
+        TextStyle {
+            white_space_collapse: WhiteSpaceCollapse::Preserve,
+            ..root_style()
+        },
+        pieces,
+    )
+}
+
+fn root_style() -> TextStyle<'static, 'static, ColorBrush> {
+    TextStyle {
         font_family: FontFamily::from(FONT_FAMILY_LIST),
         font_size: 16.,
         line_height: LineHeight::Absolute(20.),
-        text_wrap_mode: root,
-        overflow_wrap,
         ..TextStyle::default()
-    };
+    }
+}
+
+fn build_styled(
+    style: TextStyle<'static, 'static, ColorBrush>,
+    pieces: &[Piece],
+) -> Layout<ColorBrush> {
     let mut fcx = create_font_context();
     let mut lcx: LayoutContext<ColorBrush> = LayoutContext::new();
     let mut builder = lcx.tree_builder(&mut fcx, 1., false, &style);
@@ -232,6 +258,21 @@ fn a_box_that_overflows_at_the_line_start_keeps_the_wbrs_that_wrap() {
         normal(WRAP, &[Atomic(WRAP), Text("bbbb", WRAP)]),
         ["", "bbbb"]
     );
+}
+
+#[test]
+fn nothing_but_wbrs_stays_after_a_box_that_overflows_at_the_line_start() {
+    // Chrome 125 (rinch #1081): `<inline-block 300px>  \n` under `white-space: pre-wrap` gives
+    // the spaces and the newline a line of their own, though the spaces would hang.
+    let pieces = [Atomic(WRAP), Text("  \n", WRAP)];
+    let text = "  \n";
+    let mut layout = build_preserving(&pieces);
+    layout.break_all_lines(Some(1.));
+    let got: Vec<&str> = layout
+        .lines()
+        .map(|line| text.get(line.text_range()).unwrap_or_default())
+        .collect();
+    assert_eq!(got[..2], ["", "  \n"]);
 }
 
 #[test]
