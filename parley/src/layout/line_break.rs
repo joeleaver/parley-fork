@@ -1523,15 +1523,16 @@ impl<'a, B: Brush> BreakLines<'a, B> {
                         // `<nowrap>aaaa</nowrap><wbr nowrap><wbr>bbbb` out in 1px under
                         // `overflow-wrap: anywhere` with an empty line after `aaaa`.
                         // RINCH (rinch #2944): see `LineState::ends_after_box`.
-                        if self.state.line.ends_after_box && !wbr_stays {
-                            if let Some(prev) = self.state.prev_boundary.take() {
-                                self.state.reset_to(prev);
-                                return self.start_new_line(
-                                    BreakReason::Emergency,
-                                    max_advance,
-                                    line_indent,
-                                );
-                            }
+                        if self.state.line.ends_after_box
+                            && !wbr_stays
+                            && let Some(prev) = self.state.prev_boundary.take()
+                        {
+                            self.state.reset_to(prev);
+                            return self.start_new_line(
+                                BreakReason::Emergency,
+                                max_advance,
+                                line_indent,
+                            );
                         }
                         let wbr_starts_line = style.wbr == Some(TextWrapMode::NoWrap)
                             && self.state.line.overflow == Overflow::Unnoticed;
