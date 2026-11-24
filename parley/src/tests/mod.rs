@@ -7,4 +7,5 @@ mod test_inline_box_bidi;
 mod test_ligature_break;
 mod test_soft_hyphen;
 mod test_style_metrics;
+mod test_wbr;
 mod utils;

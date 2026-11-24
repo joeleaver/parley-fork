@@ -237,6 +237,7 @@ fn create_root_style() -> TextStyle<'static, 'static, ColorBrush> {
         text_wrap_mode: TextWrapMode::Wrap,
         white_space_collapse: WhiteSpaceCollapse::PreserveBreaks,
         hyphens: Hyphens::None,
+        wbr: None,
     }
 }
 

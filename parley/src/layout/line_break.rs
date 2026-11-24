@@ -108,12 +108,68 @@ struct LineState {
     /// a 1px box as an empty line, then `aaaa`.
     holds_atoms: bool,
 
-    /// RINCH (rinch #2944): whether the line starts after a soft wrap (a `Regular` or `Emergency`
-    /// break). Such a line that holds only zero-advance atoms ends at an opportunity only before
-    /// text that does not wrap: Chrome 158 lays `aaaa<wbr><wbr>bbbb` out in 1px as `aaaa` / an
-    /// empty line / `bbbb` under `white-space: nowrap`, but `aaaa <wbr> bbbb` and
-    /// `aaaa<wbr><wbr>bbbb` as two lines under `normal`.
-    after_soft_break: bool,
+    /// RINCH (rinch #2944): whether content that does not fit has been appended to the line, and
+    /// if so which way Chrome would end the line ([`Overflow`]).
+    overflow: Overflow,
+}
+
+/// RINCH (rinch #2944): whether a line already overflows, and if it does, which `<wbr>`s after
+/// the first soft wrap opportunity past the overflow stay on the line when it ends there
+/// ([`crate::TextStyle::wbr`]).
+///
+/// Blink notices that a line overflows only when it adds text that wraps to it, or when text that
+/// wraps does not fit. Text that does not wrap and overflows is noticed at the next text
+/// after it: if `<wbr>`s come first, the line ends at the first opportunity among them, and only
+/// the `<wbr>`s that wrap stay on it (`RewindOverflow`); the line after starts with the first that
+/// does not, and holding nothing else that fits, ends after them (`HandleOverflow`). Noticed
+/// before the `<wbr>`s, the line ends at the first opportunity and every `<wbr>` after it stays on
+/// it (the `kTrailing` state). Chrome 158, each box 1px wide: `aaaa<wbr><wbr>bbbb` is `aaaa` / an
+/// empty line / `bbbb` under `white-space: nowrap`, two lines under `normal` (the overflow is
+/// noticed in `aaaa`) and two lines in a `normal` box whose `aaaa` alone is `nowrap` (the second
+/// `<wbr>` wraps).
+///
+/// Blink's items are per DOM text node, which a layout does not know: text that does not wrap,
+/// split over two elements, has its overflow noticed at the second (`aa<span>aa</span><wbr><wbr>`
+/// under `nowrap` is two lines in Chrome 158), where here it is one text.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Overflow {
+    /// Everything on the line fits.
+    #[default]
+    None,
+    /// Text that does not wrap, or an inline box, overflowed, and nothing since has made Blink
+    /// notice: only white space that hangs, more text that does not wrap, inline boxes and
+    /// `<wbr>`s were appended.
+    Unnoticed,
+    /// The overflow is noticed: text that wraps overflowed, or text that wraps (other than white
+    /// space that hangs) was appended after the overflow.
+    Noticed,
+}
+
+impl Overflow {
+    /// The line's overflow after text that `wraps` is appended past the line's end. White space
+    /// that hangs is not appended here, and white space that does not (`break-spaces`) is text to
+    /// Blink. An inline box is text that does not wrap here: Chrome 158 lays
+    /// `<span style="white-space: normal"><inline-block 20px></span><wbr><wbr>bbbb` out in 1px as
+    /// two lines, the `<wbr>`s on the first, and as three when either `<wbr>` is `nowrap`.
+    fn after_overflowing(self, wraps: bool) -> Self {
+        match self {
+            Self::None if wraps => Self::Noticed,
+            Self::None => Self::Unnoticed,
+            Self::Unnoticed if wraps => Self::Noticed,
+            unchanged => unchanged,
+        }
+    }
+
+    /// Whether a `<wbr>` whose own mode is `own` stays on the line, ending at an opportunity
+    /// before it, rather than starting the next line: the opportunity before it is then no place
+    /// to end the line.
+    fn wbr_stays(self, own: TextWrapMode) -> bool {
+        match self {
+            Self::None => false,
+            Self::Unnoticed => own == TextWrapMode::Wrap,
+            Self::Noticed => true,
+        }
+    }
 }
 
 impl LineState {
@@ -126,7 +182,7 @@ impl LineState {
         self.soft_hyphen_hang = 0.0;
         self.ligature_end = None;
         self.holds_atoms = false;
-        self.after_soft_break = false;
+        self.overflow = Overflow::None;
     }
 
     /// RINCH (rinch #2614): whether the line, ended here, fits `max_advance` with the hyphen it
@@ -1077,9 +1133,6 @@ impl<'a, B: Brush> BreakLines<'a, B> {
         // trailing line after a final newline), so use the returned height.
         let line_height = self.finish_line(self.lines.lines.len() - 1, line_height, invisible);
         self.reset_line();
-        // RINCH (rinch #2944): see `LineState::after_soft_break`.
-        self.state.line.after_soft_break =
-            matches!(reason, BreakReason::Regular | BreakReason::Emergency);
 
         self.state.line_y += line_height as f64;
 
@@ -1385,11 +1438,27 @@ impl<'a, B: Brush> BreakLines<'a, B> {
                         .get(parent_style_index)
                         .is_some_and(|style| style.text_wrap_mode == TextWrapMode::Wrap);
 
-                    // If the box fits on the current line (or we are at the start of the current line)
-                    // then simply move on to the next item
+                    // If the box fits on the current line, or we are at the start of the current
+                    // line (where it will never fit, so it is consumed and the overflow accepted),
+                    // then simply move on to the next item.
+                    //
+                    // RINCH (rinch #2944): a box that overflows at the start of a line does not end
+                    // the line at once. The line ends at the opportunity after it, which the next
+                    // content that does not fit breaks at, as Blink's line breaker does: what can
+                    // hang or stay after the box stays on its line (the `<wbr>`s of `Overflow`).
                     if next_x <= max_advance
+                        || self.state.line.x == 0.0
                         || (self.state.line.text_wrap_mode != TextWrapMode::Wrap && !box_wraps)
                     {
+                        // RINCH (rinch #2944): see `Overflow`. A wrapping box that overflows at
+                        // the start of the line keeps the line break it always had after it.
+                        let overflows = next_x > max_advance;
+                        let breaks_after = overflows
+                            && (self.state.line.text_wrap_mode == TextWrapMode::Wrap || box_wraps);
+                        if overflows {
+                            self.state.line.overflow =
+                                self.state.line.overflow.after_overflowing(false);
+                        }
                         self.append_layout_inline_box(item.index, next_x);
 
                         // There is a soft wrap opportunity after an inline box, unless wrapping
@@ -1397,20 +1466,14 @@ impl<'a, B: Brush> BreakLines<'a, B> {
                         // soft hyphen (an element's end edge) the line draws the hyphen, and must
                         // fit with it, as at the opportunity after the soft hyphen itself.
                         let fits_hyphen = self.state.line.fits_soft_hyphen(max_advance);
-                        if self.state.line.text_wrap_mode == TextWrapMode::Wrap
-                            && (fits_hyphen || self.state.prev_boundary.is_none())
+                        if breaks_after
+                            || (self.state.line.text_wrap_mode == TextWrapMode::Wrap
+                                && (fits_hyphen || self.state.prev_boundary.is_none()))
                         {
                             self.state.mark_line_break_opportunity();
                         }
                     } else {
-                        // If we're at the start of the line, this box will never fit, so consume it and accept the overflow.
-                        let reason = if self.state.line.x == 0.0 {
-                            self.append_layout_inline_box(item.index, next_x);
-                            BreakReason::Emergency
-                        } else {
-                            BreakReason::Regular
-                        };
-                        return self.start_new_line(reason, max_advance, line_indent);
+                        return self.start_new_line(BreakReason::Regular, max_advance, line_indent);
                     }
                 }
                 LayoutItemKind::TextRun => {
@@ -1440,6 +1503,19 @@ impl<'a, B: Brush> BreakLines<'a, B> {
                         // Lag text_wrap_mode style by one atom
                         let text_wrap_mode = self.state.line.text_wrap_mode;
                         self.state.line.text_wrap_mode = style.text_wrap_mode;
+
+                        // RINCH (rinch #2944): a `<wbr>` that stays on the line if it ends at the
+                        // opportunity before it, which is then no place to end the line.
+                        let wbr_stays = style
+                            .wbr
+                            .is_some_and(|own| self.state.line.overflow.wbr_stays(own));
+                        // RINCH (rinch #2944): Blink retries a line that overflows with no
+                        // opportunity, under `overflow-wrap: anywhere | break-word`, breaking
+                        // anywhere, which puts one before a `<wbr>`: Chrome 158 lays
+                        // `<nowrap>aaaa</nowrap><wbr nowrap><wbr>bbbb` out in 1px under
+                        // `overflow-wrap: anywhere` with an empty line after `aaaa`.
+                        let wbr_starts_line = style.wbr == Some(TextWrapMode::NoWrap)
+                            && self.state.line.overflow == Overflow::Unnoticed;
 
                         // Take mandatory line breaks before checking for line wrapping.
                         if is_newline {
@@ -1471,14 +1547,9 @@ impl<'a, B: Brush> BreakLines<'a, B> {
                             //
                             // RINCH (rinch #2944): a line that holds only zero-advance atoms has
                             // content to end too (see `LineState::holds_atoms`); it is never the
-                            // empty line the guard is against, and holds no atom twice. After a
-                            // soft wrap, only before text that does not wrap
-                            // (`LineState::after_soft_break`).
-                            let holds = self.state.line.holds_atoms
-                                && (!self.state.line.after_soft_break
-                                    || style.text_wrap_mode != TextWrapMode::Wrap);
+                            // empty line the guard is against, and holds no atom twice.
                             let fits_hyphen = self.state.line.fits_soft_hyphen(max_advance);
-                            if (self.state.line.x != 0.0 || holds)
+                            if (self.state.line.x != 0.0 || self.state.line.holds_atoms)
                                 && (fits_hyphen || self.state.prev_boundary.is_none())
                             {
                                 self.state.mark_line_break_opportunity();
@@ -1487,9 +1558,11 @@ impl<'a, B: Brush> BreakLines<'a, B> {
                         } else if
                         // This text can contribute "emergency" line breaks.
                         style.overflow_wrap != OverflowWrap::Normal
-                        && text_wrap_mode == TextWrapMode::Wrap
+                        && (text_wrap_mode == TextWrapMode::Wrap || wbr_starts_line)
                         // If we're at the start of the line, this particular atom will never fit, so it's not a valid emergency break opportunity.
                         && self.state.line.x != 0.0
+                        // RINCH (rinch #2944): see `wbr_stays`.
+                        && !wbr_stays
                         {
                             self.state.mark_emergency_break_opportunity();
                         }
@@ -1563,7 +1636,27 @@ impl<'a, B: Brush> BreakLines<'a, B> {
                             //
                             // We "take" the line-breaking opportunity by starting a new line and resetting our
                             // item/run/cluster iteration state back to how it was when the line-breaking opportunity was encountered
-                            else if let Some(prev) = self.state.prev_boundary.take() {
+                            //
+                            // RINCH (rinch #2944): unless the atom is a `<wbr>` that stays on the
+                            // line ending there ([`Overflow`]): the opportunity moves past it.
+                            else if wbr_stays
+                                && self.state.prev_boundary.as_ref().is_some_and(|prev| {
+                                    prev.item_idx == self.state.item_idx
+                                        && prev.state.clusters.end == self.state.line.clusters.end
+                                })
+                            {
+                                if max_height_exceeded {
+                                    return self.max_height_break_data(line_height);
+                                }
+                                self.state.append_atom_to_line(
+                                    &atom,
+                                    next_x,
+                                    style_index,
+                                    &self.layout.data,
+                                    is_separator,
+                                );
+                                self.state.mark_line_break_opportunity();
+                            } else if let Some(prev) = self.state.prev_boundary.take() {
                                 self.state.reset_to(prev);
                                 return self.start_new_line(
                                     BreakReason::Regular,
@@ -1594,6 +1687,13 @@ impl<'a, B: Brush> BreakLines<'a, B> {
                             else {
                                 if max_height_exceeded {
                                     return self.max_height_break_data(line_height);
+                                }
+                                // RINCH (rinch #2944): see `Overflow`. A `<wbr>` adds nothing.
+                                if style.wbr.is_none() {
+                                    self.state.line.overflow =
+                                        self.state.line.overflow.after_overflowing(
+                                            style.text_wrap_mode == TextWrapMode::Wrap,
+                                        );
                                 }
                                 self.state.append_atom_to_line(
                                     &atom,

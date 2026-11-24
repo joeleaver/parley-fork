@@ -71,6 +71,9 @@ pub struct Style<B: Brush> {
     /// CSS `hyphens`: whether a line ending at a soft hyphen of this style draws a hyphen
     /// (RINCH, rinch #2614).
     pub(crate) hyphens: crate::style::Hyphens,
+    /// RINCH (rinch #2944): the `<wbr>` this text is, if any, and its own wrap mode
+    /// ([`crate::TextStyle::wbr`]).
+    pub(crate) wbr: Option<TextWrapMode>,
     /// The locale of the text, if any.
     ///
     /// This is useful for consumers exposing the text to assistive technologies,
