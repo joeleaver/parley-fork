@@ -24,6 +24,7 @@ pub(crate) struct BuilderOptions<'a> {
     quantize: bool,
     base_direction: BaseDirection,
     line_break_override: Option<&'a LineBreakOverrideFn>,
+    reopened_bidi_controls: &'a [Range<usize>],
 }
 
 impl BuilderOptions<'_> {
@@ -33,6 +34,7 @@ impl BuilderOptions<'_> {
             quantize,
             base_direction: BaseDirection::Auto,
             line_break_override: None,
+            reopened_bidi_controls: &[],
         }
     }
 }
@@ -88,6 +90,14 @@ impl<'b, B: Brush> RangedBuilder<'b, B> {
     /// See [`LineBreakOverrideFn`] for more details.
     pub fn set_line_break_override(&mut self, overrides: Option<&'b LineBreakOverrideFn>) {
         self.options.line_break_override = overrides;
+    }
+
+    /// RINCH (rinch #2962): the byte ranges, ascending and non-overlapping, of the bidi control
+    /// characters in the text that stand for an element's `unicode-bidi` rather than being the
+    /// text's own. One still open at a paragraph separator is reopened after it, where the text's
+    /// own controls end (UAX #9 X8). See [`parley_engine::AnalysisOptions::reopened_bidi_controls`].
+    pub fn set_reopened_bidi_controls(&mut self, ranges: &'b [Range<usize>]) {
+        self.options.reopened_bidi_controls = ranges;
     }
 
     pub fn build_into(self, layout: &mut Layout<B>, text: impl AsRef<str>) {
@@ -192,6 +202,14 @@ impl<'b, B: Brush> StyleRunBuilder<'b, B> {
     /// See [`LineBreakOverrideFn`] for more details.
     pub fn set_line_break_override(&mut self, overrides: Option<&'b LineBreakOverrideFn>) {
         self.options.line_break_override = overrides;
+    }
+
+    /// RINCH (rinch #2962): the byte ranges, ascending and non-overlapping, of the bidi control
+    /// characters in the text that stand for an element's `unicode-bidi` rather than being the
+    /// text's own. One still open at a paragraph separator is reopened after it, where the text's
+    /// own controls end (UAX #9 X8). See [`parley_engine::AnalysisOptions::reopened_bidi_controls`].
+    pub fn set_reopened_bidi_controls(&mut self, ranges: &'b [Range<usize>]) {
+        self.options.reopened_bidi_controls = ranges;
     }
 
     pub fn build_into(self, layout: &mut Layout<B>, text: impl AsRef<str>) {
@@ -314,6 +332,14 @@ impl<'b, B: Brush> TreeBuilder<'b, B> {
         self.options.line_break_override = overrides;
     }
 
+    /// RINCH (rinch #2962): the byte ranges, ascending and non-overlapping, of the bidi control
+    /// characters in the text that stand for an element's `unicode-bidi` rather than being the
+    /// text's own. One still open at a paragraph separator is reopened after it, where the text's
+    /// own controls end (UAX #9 X8). See [`parley_engine::AnalysisOptions::reopened_bidi_controls`].
+    pub fn set_reopened_bidi_controls(&mut self, ranges: &'b [Range<usize>]) {
+        self.options.reopened_bidi_controls = ranges;
+    }
+
     #[inline]
     pub fn build_into(self, layout: &mut Layout<B>) -> String {
         // Apply TreeStyleBuilder styles to LayoutContext.
@@ -367,6 +393,7 @@ fn build_into_layout<B: Brush>(
         text,
         options.base_direction,
         options.line_break_override,
+        options.reopened_bidi_controls,
     );
 
     layout.data.clear();

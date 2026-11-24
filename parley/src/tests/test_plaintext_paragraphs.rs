@@ -8,6 +8,7 @@
 
 use alloc::vec;
 use alloc::vec::Vec;
+use core::ops::Range;
 
 use super::utils::ColorBrush;
 use super::utils::fonts::{FONT_FAMILY_LIST, create_font_context};
@@ -21,6 +22,16 @@ const WIDTH: f32 = 400.;
 /// A paragraph of `parts` — text, or `None` for a 10px box — with base direction `base`, broken
 /// in 400px and start-aligned: each line's direction, and each box's x.
 fn lay_out(base: BaseDirection, parts: &[Option<&str>]) -> (Vec<bool>, Vec<f32>) {
+    lay_out_reopening(base, parts, &[])
+}
+
+/// [`lay_out`], with the bidi controls at `reopened` marked as an element's
+/// (`TreeBuilder::set_reopened_bidi_controls`).
+fn lay_out_reopening(
+    base: BaseDirection,
+    parts: &[Option<&str>],
+    reopened: &[Range<usize>],
+) -> (Vec<bool>, Vec<f32>) {
     let mut fcx = create_font_context();
     let mut lcx: LayoutContext<ColorBrush> = LayoutContext::new();
     let root = TextStyle {
@@ -31,6 +42,7 @@ fn lay_out(base: BaseDirection, parts: &[Option<&str>]) -> (Vec<bool>, Vec<f32>)
     };
     let mut builder = lcx.tree_builder(&mut fcx, 1., false, &root);
     builder.set_base_direction(base);
+    builder.set_reopened_bidi_controls(reopened);
     let mut id = 0;
     for part in parts {
         match part {
@@ -137,25 +149,62 @@ fn an_explicit_directions_paragraphs_are_resolved_on_their_own() {
     );
 }
 
-// RINCH (rinch #2962): an embedding open at a separator is reopened after it, so it runs across:
-// the second line's box and ` d` stay left to right inside the right-to-left line, the box first.
+// RINCH (rinch #2962): an element's embedding open at a separator is reopened after it, so it runs
+// across: the second line's box and ` d` stay left to right inside the right-to-left line, the
+// box first.
 #[test]
-fn an_embedding_runs_across_a_separator() {
-    let (_, xs) = lay_out(
+fn an_elements_embedding_runs_across_a_separator() {
+    // LRE `abc` LF, the box, ` d` PDF: the controls at 0..3 and 9..12.
+    let marked = [0..3, 9..12];
+    let (_, xs) = lay_out_reopening(
         BaseDirection::Rtl,
         &[Some("\u{202a}abc\n"), None, Some(" d\u{202c}")],
+        &marked,
     );
     assert!(xs[0] < WIDTH - 10. - 1., "{xs:?}");
     // An isolate too.
-    let (_, xs) = lay_out(
+    let (_, xs) = lay_out_reopening(
         BaseDirection::Rtl,
         &[Some("\u{2066}abc\n"), None, Some(" d\u{2069}")],
+        &marked,
     );
     assert!(xs[0] < WIDTH - 10. - 1., "{xs:?}");
     // Closed before the separator, it is not reopened: the box is at the right.
-    let (_, xs) = lay_out(
+    let (_, xs) = lay_out_reopening(
         BaseDirection::Rtl,
         &[Some("\u{202a}abc\u{202c}\n"), None, Some(" d")],
+        &[0..3, 6..9],
     );
     assert_eq!(xs, vec![WIDTH - 10.]);
+    // Carried across two separators.
+    let (_, xs) = lay_out_reopening(
+        BaseDirection::Rtl,
+        &[Some("\u{202a}abc\ne\n"), None, Some(" d\u{202c}")],
+        &[0..3, 11..14],
+    );
+    assert!(xs[0] < WIDTH - 10. - 1., "{xs:?}");
+}
+
+// RINCH (rinch #2962): the text's own controls end at a separator (UAX #9 X8), as in a browser: the
+// box after it starts a right-to-left paragraph of its own, at the right.
+#[test]
+fn the_texts_own_controls_end_at_a_separator() {
+    for (open, close) in [("\u{202a}", "\u{202c}"), ("\u{2066}", "\u{2069}")] {
+        let first = alloc::format!("{open}abc\n");
+        let last = alloc::format!(" d{close}");
+        let (_, xs) = lay_out(BaseDirection::Rtl, &[Some(&first), None, Some(&last)]);
+        assert_eq!(xs, vec![WIDTH - 10.], "{open:?}");
+    }
+    // Only the marked one of two is reopened: an author's LRE inside an element's RLE.
+    let (_, xs) = lay_out_reopening(
+        BaseDirection::Ltr,
+        &[
+            Some("\u{202b}\u{202a}abc\n"),
+            None,
+            Some(" d\u{202c}\u{202c}"),
+        ],
+        &[0..3, 15..18],
+    );
+    // The box opens a right-to-left embedding's line: at the line's right.
+    assert!(xs[0] > 1., "{xs:?}");
 }

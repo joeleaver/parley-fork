@@ -880,12 +880,13 @@ pub(crate) fn analyze_text(
     if needs_bidi_resolution || options.base_direction == BaseDirection::Rtl {
         let boxes = options.inline_boxes;
         if boxes.is_empty() {
+            let mut reopened = bidi::ReopenedControls::new(options.reopened_bidi_controls);
             analyzer.bidi.resolve(
-                text.chars().map(|ch| {
+                text.char_indices().map(|(at, ch)| {
                     let bidi_class = data_sources.properties(ch).bidi_class();
                     // TODO: maybe extend Properties to u64 to fit BidiMirroringGlyph
                     let bracket = data_sources.brackets().get(ch);
-                    (ch, (bidi_class, bracket))
+                    ((ch, (bidi_class, bracket)), reopened.contains(at))
                 }),
                 options.base_direction,
             );
@@ -915,6 +916,7 @@ pub(crate) fn analyze_text(
                 data_sources.brackets().get(OBJECT),
             );
             let mut next_box = 0;
+            let mut reopened = bidi::ReopenedControls::new(options.reopened_bidi_controls);
             let merged = text
                 .char_indices()
                 .map(Some)
@@ -925,11 +927,11 @@ pub(crate) fn analyze_text(
                     while next_box < boxes.len() && boxes[next_box] <= at {
                         next_box += 1;
                     }
-                    let objects = (from..next_box).map(move |_| (OBJECT, object));
-                    let ch = item.map(|(_, ch)| {
+                    let objects = (from..next_box).map(move |_| ((OBJECT, object), false));
+                    let ch = item.map(|(at, ch)| {
                         let bidi_class = data_sources.properties(ch).bidi_class();
                         let bracket = data_sources.brackets().get(ch);
-                        (ch, (bidi_class, bracket))
+                        ((ch, (bidi_class, bracket)), reopened.contains(at))
                     });
                     objects.chain(ch)
                 });

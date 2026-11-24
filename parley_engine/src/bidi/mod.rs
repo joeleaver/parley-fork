@@ -5,6 +5,7 @@
 
 mod classes;
 mod explicit;
+mod paragraphs;
 mod runs;
 mod sequence;
 
@@ -14,6 +15,7 @@ use parlance::{BaseDirection, BidiLevel};
 
 pub(crate) use classes::needs_bidi_resolution;
 use classes::{BIDI_MASK, is_isolate_initiator, is_removed_by_x9, mask};
+pub(crate) use paragraphs::{BidiChar, ReopenedControls};
 use runs::Run;
 
 /// Resolver for the Unicode bidirectional algorithm.
@@ -58,120 +60,11 @@ impl BidiResolver {
         self.base_level = BidiLevel::new(0);
     }
 
-    /// Resolves the text with the specified base direction and precomputed
-    /// types.
-    ///
-    /// RINCH (rinch #2940): under [`BaseDirection::Auto`] each paragraph (UAX #9
-    /// P1: the text up to and including a paragraph separator, class B, with
-    /// CR LF one separator) is resolved on its own, its base level from its own
-    /// first strong character (P2, P3), and [`Self::paragraphs`] lists them. As
-    /// CSS `unicode-bidi: plaintext` asks, and as Blink does. RINCH (rinch #2962):
-    /// under an explicit direction the paragraphs are resolved on their own too,
-    /// each at that direction's level. Either way the explicit controls open at
-    /// a separator are reopened after it (Blink reopens an element's bidi
-    /// context after a forced break), so an element's embedding or isolate
-    /// runs across it.
-    pub(crate) fn resolve(
-        &mut self,
-        chars: impl Iterator<Item = (char, (BidiClass, BidiMirroringGlyph))>,
-        base_direction: BaseDirection,
-    ) {
-        let chars: Vec<_> = chars.collect();
-        // The end of each paragraph, one past its separator.
-        let mut ends = Vec::new();
-        for (i, &(ch, (t, _))) in chars.iter().enumerate() {
-            let crlf = ch == '\r' && chars.get(i + 1).is_some_and(|&(next, _)| next == '\n');
-            if t == BidiClass::ParagraphSeparator && !crlf {
-                ends.push(i + 1);
-            }
-        }
-        if ends.last() != Some(&chars.len()) {
-            ends.push(chars.len());
-        }
-        let auto = base_direction == BaseDirection::Auto;
-        // A separator at the end leaves an empty last paragraph, which has no
-        // strong character: left to right (P3) under `Auto`.
-        let empty_last = auto
-            && chars
-                .last()
-                .is_some_and(|&(_, (t, _))| t == BidiClass::ParagraphSeparator);
-        if ends.len() == 1 && !empty_last {
-            self.resolve_paragraph(chars.into_iter(), base_direction);
-            self.paragraphs.clear();
-            self.paragraphs.push((0, self.base_level));
-            return;
-        }
-        let mut levels = Vec::with_capacity(chars.len());
-        let mut paragraphs = Vec::with_capacity(ends.len() + 1);
-        // RINCH (rinch #2962): the explicit controls open at the end of the
-        // paragraph before, reopened at the start of the next, as Blink
-        // reopens an element's bidi context after a forced break (X8 would
-        // end them at the separator).
-        let mut open: Vec<(char, (BidiClass, BidiMirroringGlyph))> = Vec::new();
-        let mut start = 0;
-        for end in ends {
-            let carried = open.len();
-            self.resolve_paragraph(
-                open.iter()
-                    .copied()
-                    .chain(chars[start..end].iter().copied()),
-                base_direction,
-            );
-            paragraphs.push((start, self.base_level));
-            levels.extend_from_slice(&self.levels[carried..]);
-            for &c in &chars[start..end] {
-                match c.1.0 {
-                    BidiClass::LeftToRightEmbedding
-                    | BidiClass::RightToLeftEmbedding
-                    | BidiClass::LeftToRightOverride
-                    | BidiClass::RightToLeftOverride
-                    | BidiClass::LeftToRightIsolate
-                    | BidiClass::RightToLeftIsolate
-                    | BidiClass::FirstStrongIsolate => open.push(c),
-                    // X7: a PDF closes an embedding or override, not an isolate.
-                    BidiClass::PopDirectionalFormat => {
-                        if open.last().is_some_and(|o| !is_isolate_initiator(o.1.0)) {
-                            open.pop();
-                        }
-                    }
-                    // X6a: a PDI closes its isolate and everything opened in it.
-                    BidiClass::PopDirectionalIsolate => {
-                        if let Some(at) = open.iter().rposition(|o| is_isolate_initiator(o.1.0)) {
-                            open.truncate(at);
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            start = end;
-        }
-        if empty_last {
-            paragraphs.push((chars.len(), BidiLevel::new(0)));
-        }
-        self.base_level = paragraphs[0].1;
-        self.levels = levels;
-        // Under an explicit direction every paragraph has the base level.
-        if auto {
-            self.paragraphs = paragraphs;
-        } else {
-            self.paragraphs.clear();
-            self.paragraphs.push((0, self.base_level));
-        }
-    }
-
-    /// RINCH (rinch #2940): each paragraph [`Self::resolve`] found, as the index
-    /// of its first character (in the order the characters were given) and its
-    /// base level, in order; the first starts at 0. A text that ends in a
-    /// paragraph separator has an empty last paragraph at its length.
-    pub(crate) fn paragraphs(&self) -> &[(usize, BidiLevel)] {
-        &self.paragraphs
-    }
-
     /// Resolves one paragraph with the specified base direction and
     /// precomputed types.
     fn resolve_paragraph(
         &mut self,
-        chars: impl Iterator<Item = (char, (BidiClass, BidiMirroringGlyph))>,
+        chars: impl Iterator<Item = BidiChar>,
         base_direction: BaseDirection,
     ) {
         self.clear();
