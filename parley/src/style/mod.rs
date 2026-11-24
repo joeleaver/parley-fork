@@ -295,6 +295,9 @@ pub enum StyleProperty<'a, B: Brush> {
     WhiteSpaceCollapse(WhiteSpaceCollapse),
     /// CSS `hyphens` (RINCH, rinch #2621).
     Hyphens(Hyphens),
+    /// RINCH (rinch #2944): the text is an HTML `<wbr>` (a zero width space), and this is the
+    /// `<wbr>` element's own wrap mode. See [`TextStyle::wbr`].
+    Wbr(Option<TextWrapMode>),
 }
 
 /// Unresolved styles.
@@ -354,6 +357,17 @@ pub struct TextStyle<'family, 'settings, B: Brush> {
     pub white_space_collapse: WhiteSpaceCollapse,
     /// CSS `hyphens` (RINCH, rinch #2621).
     pub hyphens: Hyphens,
+    /// RINCH (rinch #2944): `Some` when the text is an HTML `<wbr>`, laid out as a zero width
+    /// space, holding the `<wbr>` element's own wrap mode; `None` (the default) for any other
+    /// text.
+    ///
+    /// The text's [`Self::text_wrap_mode`] decides the soft wrap opportunity after it, as for any
+    /// text; a `<wbr>` is an opportunity whatever its `white-space`, so its text is laid out under
+    /// [`TextWrapMode::Wrap`]. Its own mode decides where a line that already overflows ends when
+    /// the opportunity before the `<wbr>` is the first one after the overflow: Chrome keeps a
+    /// `<wbr>` whose own mode wraps on the line that ends, and starts the next line with one whose
+    /// own mode does not (Blink's `RewindOverflow`: a control item is trailable if it wraps).
+    pub wbr: Option<TextWrapMode>,
 }
 
 impl<B: Brush> Default for TextStyle<'static, 'static, B> {
@@ -386,6 +400,7 @@ impl<B: Brush> Default for TextStyle<'static, 'static, B> {
             text_wrap_mode: TextWrapMode::default(),
             white_space_collapse: WhiteSpaceCollapse::default(),
             hyphens: Hyphens::default(),
+            wbr: None,
         }
     }
 }

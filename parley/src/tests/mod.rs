@@ -9,4 +9,5 @@ mod test_line_edge_caret;
 mod test_plaintext_paragraphs;
 mod test_soft_hyphen;
 mod test_style_metrics;
+mod test_wbr;
 mod utils;

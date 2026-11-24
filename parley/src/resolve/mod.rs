@@ -170,6 +170,7 @@ impl ResolveContext {
             StyleProperty::TextWrapMode(value) => TextWrapMode(*value),
             StyleProperty::WhiteSpaceCollapse(value) => WhiteSpaceCollapse(*value),
             StyleProperty::Hyphens(value) => Hyphens(*value),
+            StyleProperty::Wbr(value) => Wbr(*value),
         }
     }
 
@@ -212,6 +213,7 @@ impl ResolveContext {
             text_wrap_mode: raw_style.text_wrap_mode,
             white_space_collapse: raw_style.white_space_collapse,
             hyphens: raw_style.hyphens,
+            wbr: raw_style.wbr,
         }
     }
 
@@ -404,6 +406,8 @@ pub(crate) enum ResolvedProperty<B: Brush> {
     WhiteSpaceCollapse(WhiteSpaceCollapse),
     /// CSS `hyphens`.
     Hyphens(crate::style::Hyphens),
+    /// RINCH (rinch #2944): see [`crate::TextStyle::wbr`].
+    Wbr(Option<TextWrapMode>),
 }
 
 /// Flattened group of style properties.
@@ -454,6 +458,8 @@ pub(crate) struct ResolvedStyle<B: Brush> {
     pub(crate) white_space_collapse: WhiteSpaceCollapse,
     /// CSS `hyphens`.
     pub(crate) hyphens: crate::style::Hyphens,
+    /// RINCH (rinch #2944): see [`crate::TextStyle::wbr`].
+    pub(crate) wbr: Option<TextWrapMode>,
 }
 
 impl<B: Brush> ResolvedStyle<B> {
@@ -488,6 +494,7 @@ impl<B: Brush> ResolvedStyle<B> {
             TextWrapMode(value) => self.text_wrap_mode = value,
             WhiteSpaceCollapse(value) => self.white_space_collapse = value,
             Hyphens(value) => self.hyphens = value,
+            Wbr(value) => self.wbr = value,
         }
     }
 
@@ -521,6 +528,7 @@ impl<B: Brush> ResolvedStyle<B> {
             TextWrapMode(value) => self.text_wrap_mode == *value,
             WhiteSpaceCollapse(value) => self.white_space_collapse == *value,
             Hyphens(value) => self.hyphens == *value,
+            Wbr(value) => self.wbr == *value,
         }
     }
 
@@ -536,6 +544,7 @@ impl<B: Brush> ResolvedStyle<B> {
             text_wrap_mode: self.text_wrap_mode,
             white_space_collapse: self.white_space_collapse,
             hyphens: self.hyphens,
+            wbr: self.wbr,
             locale: self.locale,
         }
     }
