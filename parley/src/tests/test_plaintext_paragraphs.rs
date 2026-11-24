@@ -208,3 +208,28 @@ fn the_texts_own_controls_end_at_a_separator() {
     // The box opens a right-to-left embedding's line: at the line's right.
     assert!(xs[0] > 1., "{xs:?}");
 }
+
+// RINCH (rinch #2962): P2 skips the isolates looking for a paragraph's first strong character.
+// After a separator Blink gives the line the direction of the first strong character inside one
+// too, its levels still P2's: Chrome 158 lays out `x<br><span dir=ltr>abc</span> <img> א` as a
+// left-to-right line holding `א <img> abc`, the image just right of the `א`.
+#[test]
+fn a_later_paragraphs_line_direction_counts_isolates() {
+    let (rtl, _) = lay_out(
+        BaseDirection::Auto,
+        &[Some("\u{2066}abcdefgh\u{2069} "), None, Some(" א")],
+    );
+    assert_eq!(rtl, vec![true]);
+    let (rtl, xs) = lay_out(
+        BaseDirection::Auto,
+        &[Some("x\n\u{2066}abcdefgh\u{2069} "), None, Some(" א")],
+    );
+    assert_eq!(rtl, vec![false, false]);
+    // Left-aligned with `א ` before the box: not after `abcdefgh ` (P2's levels skipped), nor at
+    // the right (the line's direction P2's).
+    let (_, latin) = lay_out(BaseDirection::Ltr, &[Some("abcdefgh "), None]);
+    assert!(
+        xs[0] > 0. && xs[0] < latin[0],
+        "{xs:?}, after the Latin {latin:?}"
+    );
+}

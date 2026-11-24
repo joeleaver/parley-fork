@@ -28,6 +28,12 @@ impl BidiResolver {
     /// resolved on its own. Under [`BaseDirection::Auto`] its base level comes
     /// from its own first strong character (P2, P3), and [`Self::paragraphs`]
     /// lists them, as CSS `unicode-bidi: plaintext` asks and as Blink does.
+    /// RINCH (rinch #2962): a paragraph after the first is listed with the
+    /// direction of its first strong character inside an isolate too, which
+    /// Blink gives its lines (their alignment and the side their spaces hang
+    /// on), while its levels are resolved at P2's, which skips isolates.
+    /// Chrome 158 lays out `x<br><span dir=ltr>abc</span> <img> א` as a
+    /// left-to-right line holding `א <img> abc`.
     /// RINCH (rinch #2962): under an explicit direction each is resolved at
     /// that direction's level, so a neutral that starts a paragraph takes it
     /// rather than the strong text's before the separator.
@@ -77,8 +83,15 @@ impl BidiResolver {
                 return;
             }
             levels.extend_from_slice(&self.levels[carried.len()..]);
-            if auto || self.paragraphs.is_empty() {
+            if self.paragraphs.is_empty() {
                 self.paragraphs.push((start, self.base_level));
+            } else if auto {
+                // After a separator Blink takes the line's direction from the
+                // first strong character inside an isolate too, its levels
+                // still resolved by P2 (`ubidi_getBaseDirection` over the
+                // paragraph's text).
+                let direction = Self::default_level(&self.initial_types, false);
+                self.paragraphs.push((start, direction));
             }
             start += self.levels.len() - carried.len();
             if empty_last {

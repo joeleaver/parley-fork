@@ -81,7 +81,7 @@ impl BidiResolver {
             len += 1;
         }
         self.base_level = match base_direction {
-            BaseDirection::Auto => Self::default_level(&self.initial_types),
+            BaseDirection::Auto => Self::default_level(&self.initial_types, true),
             BaseDirection::Ltr => BidiLevel::new(0),
             BaseDirection::Rtl => BidiLevel::new(1),
         };
@@ -162,14 +162,22 @@ impl BidiResolver {
         }
     }
 
-    fn default_level(types: &[BidiClass]) -> BidiLevel {
+    /// The level of the first strong character (P2, P3): left to right with
+    /// none. P2 skips the characters inside an isolate; RINCH (rinch #2962):
+    /// without `skip_isolates` they count, as Blink takes a `unicode-bidi:
+    /// plaintext` line's direction after a forced break ([`Self::paragraphs`]).
+    pub(super) fn default_level(types: &[BidiClass], skip_isolates: bool) -> BidiLevel {
         let mut isolates = 0;
         for ty in types {
             let ty = *ty;
             match ty {
                 BidiClass::RightToLeftIsolate
                 | BidiClass::LeftToRightIsolate
-                | BidiClass::FirstStrongIsolate => isolates += 1,
+                | BidiClass::FirstStrongIsolate
+                    if skip_isolates =>
+                {
+                    isolates += 1;
+                }
                 BidiClass::PopDirectionalIsolate if isolates > 0 => isolates -= 1,
                 BidiClass::LeftToRight | BidiClass::RightToLeft | BidiClass::ArabicLetter
                     if isolates == 0 =>
