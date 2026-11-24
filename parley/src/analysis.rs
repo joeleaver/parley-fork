@@ -14,6 +14,7 @@ pub(crate) fn analyze_text<B: Brush>(
     text: &str,
     base_direction: BaseDirection,
     line_break_override: Option<&LineBreakOverrideFn>,
+    reopened_bidi_controls: &[core::ops::Range<usize>],
 ) {
     let text = if text.is_empty() { " " } else { text };
 
@@ -70,6 +71,7 @@ pub(crate) fn analyze_text<B: Brush>(
         no_hyphens: &lcx.no_hyphens,
         line_break_override,
         inline_boxes: &lcx.inline_box_indices,
+        reopened_bidi_controls,
     };
     lcx.analyzer.analyze(text, &options, &mut lcx.analysis);
 }

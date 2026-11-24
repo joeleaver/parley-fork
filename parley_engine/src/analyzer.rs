@@ -108,6 +108,17 @@ pub struct AnalysisOptions<'a> {
     /// it, and with the neutral rules (UAX #9 N1/N2) beside its neighbours, and the text's own
     /// levels are resolved with it there. [`Analysis::inline_box_levels`] holds the result.
     pub inline_boxes: &'a [usize],
+
+    /// RINCH (rinch #2962): the byte ranges, ascending and non-overlapping, of the bidi control
+    /// characters that stand for an element's `unicode-bidi` (CSS Writing Modes 3 §2.4.2) rather
+    /// than being the text's own.
+    ///
+    /// UAX #9 X8 ends every explicit embedding, override and isolate at a paragraph separator.
+    /// One of these still open there is reopened at the start of the next paragraph, as Blink
+    /// reopens an element's bidi context after a forced break, so the element's embedding,
+    /// isolate or override runs across a `<br>`. A control outside them ends at the separator.
+    /// Empty by default.
+    pub reopened_bidi_controls: &'a [Range<usize>],
 }
 
 impl core::fmt::Debug for AnalysisOptions<'_> {
@@ -118,6 +129,7 @@ impl core::fmt::Debug for AnalysisOptions<'_> {
             .field("break_spaces", &self.break_spaces)
             .field("no_hyphens", &self.no_hyphens)
             .field("inline_boxes", &self.inline_boxes)
+            .field("reopened_bidi_controls", &self.reopened_bidi_controls)
             .finish_non_exhaustive()
     }
 }
